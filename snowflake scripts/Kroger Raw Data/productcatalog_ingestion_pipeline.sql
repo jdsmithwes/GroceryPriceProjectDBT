@@ -172,11 +172,16 @@ SHOW PIPES LIKE 'KROGER_PRODUCT_CATALOG_PIPE' IN SCHEMA GROCERYDBTPROJECT.AWS_RE
 -- automatically until this AWS-side step is done. Once done, this whole
 -- Kroger section requires no further manual intervention for new files.
 --
--- IMPORTANT: this pipe's queue is ONE of now FOUR queues that need to be
--- registered on the bucket's Event Notification config for kroger/ — one
--- per pipe (catalog, locations, pricing, inventory). A single S3 object-
--- create event fans out to every queue configured for that prefix; each
--- pipe's own PATTERN then decides whether it actually loads that file.
+-- CONFIRMED 2026-08-10: this same queue ARN is shared by ALL FOUR Kroger
+-- pipes (catalog, locations, pricing, inventory) — the notification
+-- channel appears to be tied to the STAGE (MY_S3_STAGE_KROGER), not to
+-- each individual pipe. One S3 Event Notification registration for this
+-- one queue is therefore sufficient for all four; Snowflake internally
+-- routes the incoming message to every pipe reading from that stage, and
+-- each pipe's own PATTERN decides whether it actually loads a given file.
+-- (Earlier comments in these files claiming each pipe gets its own
+-- dedicated queue were an untested assumption that turned out wrong —
+-- corrected here once real SHOW PIPES output from all four confirmed it.)
 -- See location_ingestion_pipeline.sql / pricing_ingestion_pipeline.sql /
 -- inventory_ingestion_pipeline.sql for the other three.
 
@@ -244,8 +249,12 @@ AS
 
 -- 5. [INFORMATIONAL — only needed once, to wire up AWS]
 SHOW PIPES LIKE 'WALMART_PRODUCT_CATALOG_PIPE' IN SCHEMA GROCERYDBTPROJECT.AWS_RESOURCES;
--- ^ This pipe gets its OWN SQS queue — a different ARN than Kroger's pipe.
--- Copy this "notification_channel" value and add a SEPARATE S3 Event
--- Notification on the bucket — prefix "walmart/", event type "All object
--- create events" — pointed at this ARN. Reusing Kroger's queue/notification
--- won't work; each pipe needs its own.
+-- ^ The notification channel appears to be tied to the STAGE, not the
+-- pipe (confirmed 2026-08-10: all four Kroger pipes, which share one
+-- stage, share one queue). This pipe reads from a DIFFERENT stage
+-- (MY_S3_STAGE_WALMART), so it likely gets its own distinct queue —
+-- unverified since Walmart data is still blocked upstream (see Walmart
+-- API section in .claude/instructions.md). When Walmart is unblocked,
+-- confirm via this SHOW PIPES output, then add a SEPARATE S3 Event
+-- Notification on the bucket for the walmart/ prefix pointed at whatever
+-- ARN comes back — don't assume it's the same as Kroger's shared queue.

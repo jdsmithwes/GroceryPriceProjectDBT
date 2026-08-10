@@ -48,10 +48,11 @@ GroceryPriceProject/
 │   └── Product Inventory/
 │       └── Kroger_Inventory_2026-08-10.py        # Per-store stock/fulfillment, same batching (working)
 ├── snowflake scripts/
-│   ├── productcatalog_ingestion_pipeline.sql     # Shared setup + catalog Snowpipes (Kroger + Walmart)
-│   ├── location_ingestion_pipeline.sql           # Kroger locations Snowpipe
-│   ├── pricing_ingestion_pipeline.sql            # Kroger pricing Snowpipe
-│   └── inventory_ingestion_pipeline.sql          # Kroger inventory Snowpipe
+│   └── Kroger Raw Data/
+│       ├── productcatalog_ingestion_pipeline.sql # Shared setup + catalog Snowpipes (Kroger + Walmart)
+│       ├── location_ingestion_pipeline.sql       # Kroger locations Snowpipe
+│       ├── pricing_ingestion_pipeline.sql        # Kroger pricing Snowpipe
+│       └── inventory_ingestion_pipeline.sql      # Kroger inventory Snowpipe
 ├── data/raw/                                     # Local CSV copies from script runs
 ├── credentials/walmart/                          # (empty in-repo; real keys live outside repo, see Walmart section)
 ├── .env                                          # API + AWS credentials (gitignored)
@@ -144,8 +145,9 @@ A real, live-verified store: `locationId = "01100695"` ("Kroger - Ponce", Atlant
 **SQL pipeline files** (`snowflake scripts/`), naming convention `%source%_ingestion_pipeline.sql`:
 - `productcatalog_ingestion_pipeline.sql` — shared setup (warehouse/db/schemas/storage integration/`MY_S3_STAGE_KROGER` stage/`MY_CSV_INFER` file format) **lives in this file** — the other three assume it's been run once and don't redefine those objects. Also has the Kroger + Walmart catalog pipes.
 - `location_ingestion_pipeline.sql`, `pricing_ingestion_pipeline.sql`, `inventory_ingestion_pipeline.sql` — one pipe each, reusing the shared stage/file format.
+- All four now live under `snowflake scripts/Kroger Raw Data/` (moved there 2026-08-10, after originally being directly in `snowflake scripts/`).
 
-**Multi-file-type Snowpipe pattern**: all four Kroger file types (`kroger_product_catalog_*.csv`, `kroger_locations_*.csv`, `kroger_pricing_*.csv`, `kroger_inventory_*.csv`) land in the same `kroger/` S3 prefix and are read via the SAME shared stage (`MY_S3_STAGE_KROGER`) — differentiated only by a `PATTERN` clause on each pipe's `COPY INTO` (e.g. `PATTERN = '.*kroger_pricing_.*[.]csv'`). Each `AUTO_INGEST` pipe gets its **own dedicated SQS queue** (confirmed live — different ARNs per pipe), so the S3 bucket's Event Notification config needs **one `QueueConfiguration` entry per pipe** (all four, all scoped to prefix `kroger/`) — a single S3 object-create event fans out to all four queues, and each pipe's own `PATTERN` decides whether it actually loads that specific file.
+**Multi-file-type Snowpipe pattern**: all four Kroger file types (`kroger_product_catalog_*.csv`, `kroger_locations_*.csv`, `kroger_pricing_*.csv`, `kroger_inventory_*.csv`) land in the same `kroger/` S3 prefix and are read via the SAME shared stage (`MY_S3_STAGE_KROGER`) — differentiated only by a `PATTERN` clause on each pipe's `COPY INTO` (e.g. `PATTERN = '.*kroger_pricing_.*[.]csv'`). **Confirmed live 2026-08-10 via `SHOW PIPES` on all four pipes: they all share the exact same `notification_channel` (SQS queue ARN).** The notification channel is tied to the *stage*, not to each individual pipe — an assumption stated otherwise earlier in this project (and originally written into these SQL files' own comments) turned out to be wrong once actually tested. Practical upshot: **only one S3 Event Notification registration is needed**, not one per pipe — Snowflake internally routes each incoming message to every pipe reading from that stage, and each pipe's own `PATTERN` decides whether it actually loads a given file. (Walmart's catalog pipe reads from a *different* stage, `MY_S3_STAGE_WALMART`, so it likely needs its own separate registration — unconfirmed, since Walmart is still blocked.)
 
 **Raw-landing data convention** (per user direction 2026-08-10, ties into the cost-effectiveness Engineering Guideline above): ingestion scripts should NOT transform, flatten, or join nested API data. Only pull out the minimum join/partition keys as real columns (e.g. `productId`, `locationId`, `collected_at`) — everything else gets preserved as an untouched JSON string in a `raw_data` column. All parsing, joining, and business logic belongs in dbt staging models downstream, not in the Python ingestion scripts or the Snowflake landing tables. This is why `KROGER_LOCATIONS`/`KROGER_PRICING`/`KROGER_INVENTORY` use explicit fixed-column `CREATE TABLE` (not `INFER_SCHEMA`) — their shape is intentionally just join keys + one `raw_data` blob, not one column per API field.
 
