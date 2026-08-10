@@ -5,8 +5,11 @@ Kroger's Products API returns price data on the SAME /v1/products endpoint
 used for the catalog pull — it just needs filter.locationId added, since
 price is inherently per-store, not national. To avoid re-crawling the
 catalog by search term, this queries by the productIds already known from
-the catalog pull (data/raw/kroger_product_catalog.csv), batched via
-filter.productId.
+the catalog pull, batched via filter.productId. Product IDs are read
+directly from the latest kroger_product_catalog_*.csv already sitting in
+S3 (not a local file) — S3 is this project's source of truth for raw
+pulls, and there's no guarantee a local copy exists on whatever machine
+runs this script.
 
 Live-tested 2026-08-10 against real data:
   - filter.productId accepts a comma-separated batch — Kroger enforces a
@@ -65,8 +68,6 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 TOKEN_URL = "https://api.kroger.com/v1/connect/oauth2/token"
 PRODUCTS_URL = "https://api.kroger.com/v1/products"
-
-CATALOG_CSV_PATH = PROJECT_ROOT / "data" / "raw" / "kroger_product_catalog.csv"
 
 BATCH_SIZE = 50  # server-enforced max for filter.productId
 DAILY_CALL_BUDGET = 10_000
@@ -156,11 +157,21 @@ class CallBudget:
             return self._count
 
 
-def load_known_product_ids(csv_path: Path) -> list[str]:
+def load_known_product_ids(bucket: str, prefix: str) -> list[str]:
+    s3 = boto3.client("s3")
+    response = s3.list_objects_v2(Bucket=bucket, Prefix=f"{prefix}kroger_product_catalog_")
+    keys = [obj["Key"] for obj in response.get("Contents", []) if obj["Key"].endswith(".csv")]
+    if not keys:
+        raise FileNotFoundError(f"No kroger_product_catalog_*.csv found under s3://{bucket}/{prefix}")
+
+    latest_key = max(keys)  # filenames embed an ISO8601 timestamp, so lexicographic max = most recent
+    logger.info("Loading known product IDs from s3://%s/%s", bucket, latest_key)
+
+    obj = s3.get_object(Bucket=bucket, Key=latest_key)
     # dtype=str is required: Kroger productIds have meaningful leading
     # zeros (e.g. "0001111041700") that pandas silently strips if it
     # infers the column as numeric.
-    df = pd.read_csv(csv_path, dtype=str)
+    df = pd.read_csv(io.BytesIO(obj["Body"].read()), dtype=str)
     return df["productId"].dropna().unique().tolist()
 
 
@@ -261,7 +272,7 @@ def main() -> pd.DataFrame:
     client_secret = os.environ["KROGER_CLIENT_SECRET"]
 
     auth = KrogerAuth(client_id, client_secret)
-    product_ids = load_known_product_ids(CATALOG_CSV_PATH)
+    product_ids = load_known_product_ids(S3_BUCKET, S3_PREFIX)
     df = collect_pricing(auth, product_ids, LOCATION_IDS)
 
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")

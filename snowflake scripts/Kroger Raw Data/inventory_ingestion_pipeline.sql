@@ -69,12 +69,12 @@ COPY INTO GROCERYDBTPROJECT.RAW.KROGER_INVENTORY
   INCLUDE_METADATA = (INGESTED_FILENAME = METADATA$FILENAME)
   FORCE = TRUE;
 
--- 3. [INFORMATIONAL — only needed once, to wire up AWS]
+-- 3. [INFORMATIONAL]
 SHOW PIPES LIKE 'KROGER_INVENTORY_PIPE' IN SCHEMA GROCERYDBTPROJECT.AWS_RESOURCES;
--- ^ Copy the "notification_channel" value (an SQS queue ARN) from this
--- output. This pipe gets its OWN SQS queue — different from the catalog,
--- locations, and pricing pipes' queues. Add it as an ADDITIONAL S3 Event
--- Notification on the bucket for the kroger/ prefix (all object-create
--- events) — do not remove or replace the other pipes' queue
--- registrations; all four need to coexist on the same prefix, each
--- filtering via its own PATTERN.
+-- ^ CONFIRMED 2026-08-10: this pipe's notification_channel is the SAME
+-- queue ARN as the catalog, locations, and pricing pipes — the channel is
+-- tied to the shared stage (MY_S3_STAGE_KROGER), not to each pipe
+-- individually. No separate S3 Event Notification is needed for this
+-- pipe; the single registration already set up for the catalog pipe
+-- covers all four, and this pipe's own PATTERN decides which files it
+-- actually loads.
