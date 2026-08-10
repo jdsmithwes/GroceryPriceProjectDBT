@@ -10,5 +10,11 @@ __pycache__/
 # Generated data output (regenerable from scripts)
 data/
 
+# dbt build artifacts (regenerated on every run)
+logs/
+target/
+dbt_packages/
+.user.yml
+
 # OS
 .DS_Store
