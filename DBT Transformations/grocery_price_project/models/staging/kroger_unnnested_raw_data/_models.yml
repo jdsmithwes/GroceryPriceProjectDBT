@@ -1,0 +1,361 @@
+version: 2
+
+models:
+  # ============================================================
+  # Layer 1 — thin rename over the RAW source, same grain as RAW.
+  # (stg_kroger_locations/pricing/inventory are materialized as
+  # ephemeral — no physical Snowflake object, inlined into whatever
+  # refs them.)
+  # ============================================================
+
+  - name: stg_kroger_product_catalog
+    description: ""
+    columns:
+      - name: PRODUCT_ID
+        description: ""
+        data_tests:
+          - not_null
+      - name: UPC
+        description: ""
+      - name: BRAND
+        description: ""
+      - name: DESCRIPTION
+        description: ""
+      - name: CATEGORIES
+        description: ""
+      - name: COUNTRY_ORIGIN
+        description: ""
+      - name: TEMPERATURE
+        description: ""
+      - name: SIZE
+        description: ""
+      - name: SOLD_BY
+        description: ""
+      - name: IMAGE_URL
+        description: ""
+      - name: COLLECTED_AT
+        description: ""
+      - name: INGESTED_FILENAME
+        description: ""
+
+  - name: stg_kroger_locations
+    description: ""
+    columns:
+      - name: LOCATION_ID
+        description: ""
+        data_tests:
+          - not_null
+      - name: REGION
+        description: ""
+      - name: RAW_DATA
+        description: ""
+      - name: COLLECTED_AT
+        description: ""
+      - name: INGESTED_FILENAME
+        description: ""
+
+  - name: stg_kroger_pricing
+    description: ""
+    columns:
+      - name: PRODUCT_ID
+        description: ""
+        data_tests:
+          - not_null
+      - name: LOCATION_ID
+        description: ""
+        data_tests:
+          - not_null
+      - name: RAW_DATA
+        description: ""
+      - name: COLLECTED_AT
+        description: ""
+      - name: INGESTED_FILENAME
+        description: ""
+
+  - name: stg_kroger_inventory
+    description: ""
+    columns:
+      - name: PRODUCT_ID
+        description: ""
+        data_tests:
+          - not_null
+      - name: LOCATION_ID
+        description: ""
+        data_tests:
+          - not_null
+      - name: RAW_DATA
+        description: ""
+      - name: COLLECTED_AT
+        description: ""
+      - name: INGESTED_FILENAME
+        description: ""
+
+  # ============================================================
+  # Layer 2 — PARSE_JSON(RAW_DATA), top-level keys + fixed-shape
+  # nested objects flattened into columns. Same grain as Layer 1.
+  # Remaining array-typed columns (VARIANT) are fanned out into
+  # their own models one level up in models/staging/ — see
+  # Project Architecture.md for the full lineage/reasoning.
+  # ============================================================
+
+  - name: stg_json_kroger_locations
+    description: ""
+    columns:
+      - name: REGION
+        description: ""
+      - name: COLLECTED_AT
+        description: ""
+      - name: INGESTED_FILENAME
+        description: ""
+      - name: LOCATION_ID
+        description: ""
+        data_tests:
+          - not_null
+      - name: STORE_NUMBER
+        description: ""
+      - name: DIVISION_NUMBER
+        description: ""
+      - name: CHAIN
+        description: ""
+      - name: NAME
+        description: ""
+      - name: PHONE
+        description: ""
+      - name: ADDRESS_LINE1
+        description: ""
+      - name: CITY
+        description: ""
+      - name: STATE
+        description: ""
+      - name: ZIP_CODE
+        description: ""
+      - name: COUNTY
+        description: ""
+      - name: LATITUDE
+        description: ""
+      - name: LONGITUDE
+        description: ""
+      - name: LAT_LNG
+        description: ""
+      - name: HOURS_TIMEZONE
+        description: ""
+      - name: HOURS_GMT_OFFSET
+        description: ""
+      - name: HOURS_OPEN24
+        description: ""
+      - name: MONDAY_OPEN
+        description: ""
+      - name: MONDAY_CLOSE
+        description: ""
+      - name: MONDAY_OPEN24
+        description: ""
+      - name: TUESDAY_OPEN
+        description: ""
+      - name: TUESDAY_CLOSE
+        description: ""
+      - name: TUESDAY_OPEN24
+        description: ""
+      - name: WEDNESDAY_OPEN
+        description: ""
+      - name: WEDNESDAY_CLOSE
+        description: ""
+      - name: WEDNESDAY_OPEN24
+        description: ""
+      - name: THURSDAY_OPEN
+        description: ""
+      - name: THURSDAY_CLOSE
+        description: ""
+      - name: THURSDAY_OPEN24
+        description: ""
+      - name: FRIDAY_OPEN
+        description: ""
+      - name: FRIDAY_CLOSE
+        description: ""
+      - name: FRIDAY_OPEN24
+        description: ""
+      - name: SATURDAY_OPEN
+        description: ""
+      - name: SATURDAY_CLOSE
+        description: ""
+      - name: SATURDAY_OPEN24
+        description: ""
+      - name: SUNDAY_OPEN
+        description: ""
+      - name: SUNDAY_CLOSE
+        description: ""
+      - name: SUNDAY_OPEN24
+        description: ""
+      - name: DEPARTMENTS
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_locations_departments"
+
+  - name: stg_json_kroger_pricing
+    description: ""
+    columns:
+      - name: LOCATION_ID
+        description: ""
+        data_tests:
+          - not_null
+      - name: COLLECTED_AT
+        description: ""
+      - name: INGESTED_FILENAME
+        description: ""
+      - name: PRODUCT_ID
+        description: ""
+        data_tests:
+          - not_null
+      - name: UPC
+        description: ""
+      - name: PRODUCT_PAGE_URI
+        description: ""
+      - name: BRAND
+        description: ""
+      - name: COUNTRY_ORIGIN
+        description: ""
+      - name: DESCRIPTION
+        description: ""
+      - name: SNAP_ELIGIBLE
+        description: ""
+      - name: ALLERGENS_DESCRIPTION
+        description: ""
+      - name: ORGANIC_CLAIM_NAME
+        description: ""
+      - name: NON_GMO
+        description: ""
+      - name: NON_GMO_CLAIM_NAME
+        description: ""
+      - name: HYPOALLERGENIC
+        description: ""
+      - name: CERTIFIED_FOR_PASSOVER
+        description: ""
+      - name: RECEIPT_DESCRIPTION
+        description: ""
+      - name: WARNINGS
+        description: ""
+      - name: AGE_RESTRICTION
+        description: ""
+      - name: ITEM_DEPTH
+        description: ""
+      - name: ITEM_HEIGHT
+        description: ""
+      - name: ITEM_WIDTH
+        description: ""
+      - name: ITEM_GROSS_WEIGHT
+        description: ""
+      - name: ITEM_NET_WEIGHT
+        description: ""
+      - name: ITEM_AVERAGE_WEIGHT_PER_UNIT
+        description: ""
+      - name: AVERAGE_OVERALL_RATING
+        description: ""
+      - name: TOTAL_REVIEW_COUNT
+        description: ""
+      - name: TEMPERATURE_INDICATOR
+        description: ""
+      - name: TEMPERATURE_HEAT_SENSITIVE
+        description: ""
+      - name: CATEGORIES
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_pricing_categories"
+      - name: AISLE_LOCATIONS
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_pricing_aisle_locations"
+      - name: ALIAS_PRODUCT_IDS
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_pricing_alias_product_ids"
+      - name: ALLERGENS
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_pricing_allergens"
+      - name: IMAGES
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_pricing_images"
+      - name: ITEMS
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_pricing_items (the actual price/inventory data)"
+      - name: MANUFACTURER_DECLARATIONS
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_pricing_manufacturer_declarations"
+      - name: NUTRITION_INFORMATION
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_pricing_nutrition_information"
+      - name: RESTRICTIONS
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_pricing_restrictions; empty on every row as of this writing"
+      - name: SWEETENING_METHODS
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_pricing_sweetening_methods"
+
+  - name: stg_json_kroger_inventory
+    description: ""
+    columns:
+      - name: LOCATION_ID
+        description: ""
+        data_tests:
+          - not_null
+      - name: COLLECTED_AT
+        description: ""
+      - name: INGESTED_FILENAME
+        description: ""
+      - name: PRODUCT_ID
+        description: ""
+        data_tests:
+          - not_null
+      - name: UPC
+        description: ""
+      - name: PRODUCT_PAGE_URI
+        description: ""
+      - name: BRAND
+        description: ""
+      - name: COUNTRY_ORIGIN
+        description: ""
+      - name: DESCRIPTION
+        description: ""
+      - name: SNAP_ELIGIBLE
+        description: ""
+      - name: ALLERGENS_DESCRIPTION
+        description: ""
+      - name: ORGANIC_CLAIM_NAME
+        description: ""
+      - name: NON_GMO
+        description: ""
+      - name: NON_GMO_CLAIM_NAME
+        description: ""
+      - name: HYPOALLERGENIC
+        description: ""
+      - name: CERTIFIED_FOR_PASSOVER
+        description: ""
+      - name: RECEIPT_DESCRIPTION
+        description: ""
+      - name: WARNINGS
+        description: ""
+      - name: AGE_RESTRICTION
+        description: ""
+      - name: ITEM_DEPTH
+        description: ""
+      - name: ITEM_HEIGHT
+        description: ""
+      - name: ITEM_WIDTH
+        description: ""
+      - name: ITEM_GROSS_WEIGHT
+        description: ""
+      - name: ITEM_NET_WEIGHT
+        description: ""
+      - name: ITEM_AVERAGE_WEIGHT_PER_UNIT
+        description: ""
+      - name: AVERAGE_OVERALL_RATING
+        description: ""
+      - name: TOTAL_REVIEW_COUNT
+        description: ""
+      - name: TEMPERATURE_INDICATOR
+        description: ""
+      - name: TEMPERATURE_HEAT_SENSITIVE
+        description: ""
+      - name: CATEGORIES
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_inventory_categories"
+      - name: AISLE_LOCATIONS
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_inventory_aisle_locations"
+      - name: ALIAS_PRODUCT_IDS
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_inventory_alias_product_ids"
+      - name: ALLERGENS
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_inventory_allergens"
+      - name: IMAGES
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_inventory_images"
+      - name: ITEMS
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_inventory_items (the actual price/inventory data)"
+      - name: MANUFACTURER_DECLARATIONS
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_inventory_manufacturer_declarations"
+      - name: NUTRITION_INFORMATION
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_inventory_nutrition_information"
+      - name: RESTRICTIONS
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_inventory_restrictions; empty on every row as of this writing"
+      - name: SWEETENING_METHODS
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_inventory_sweetening_methods"
