@@ -1,0 +1,14 @@
+# Secrets — never commit
+.env
+credentials/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Generated data output (regenerable from scripts)
+data/
+
+# OS
+.DS_Store
