@@ -1,0 +1,12 @@
+
+CREATE STORAGE INTEGRATION IF NOT EXISTS GROCERY_PRICE_PROJECT
+  TYPE = EXTERNAL_STAGE
+  STORAGE_PROVIDER = S3
+  ENABLED = TRUE'
+  STORAGE_AWS_ROLE_ARN = 'arn:aws:iam::573509103721:role/GroceryPriceProjectSnowflakeRole
+  STORAGE_ALLOWED_LOCATIONS = (
+    's3://grocerydbtprojectrawdata/kroger/',
+    's3://grocerydbtprojectrawdata/walmart/'
+  );
+
+DESC STORAGE INTEGRATION GROCERY_PRICE_PROJECT;
