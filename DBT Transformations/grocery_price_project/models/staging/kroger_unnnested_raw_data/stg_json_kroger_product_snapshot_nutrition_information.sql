@@ -10,7 +10,7 @@
 
 with source as (
 
-    select * from {{ ref('stg_json_kroger_inventory') }}
+    select * from {{ ref('stg_json_kroger_product_snapshot') }}
 
 ),
 
@@ -19,6 +19,7 @@ nutrition_entries as (
     select
         LOCATION_ID,
         PRODUCT_ID,
+        SOURCE_PIPELINE,
         COLLECTED_AT,
         INGESTED_FILENAME,
         n.value as nutrition_entry
@@ -31,6 +32,7 @@ nutrition_entries as (
 select
     LOCATION_ID,
     PRODUCT_ID,
+    SOURCE_PIPELINE,
     COLLECTED_AT,
     INGESTED_FILENAME,
 

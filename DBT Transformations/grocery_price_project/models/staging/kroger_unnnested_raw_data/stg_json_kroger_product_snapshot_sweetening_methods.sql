@@ -5,13 +5,14 @@
 
 with source as (
 
-    select * from {{ ref('stg_json_kroger_pricing') }}
+    select * from {{ ref('stg_json_kroger_product_snapshot') }}
 
 )
 
 select
     LOCATION_ID,
     PRODUCT_ID,
+    SOURCE_PIPELINE,
     COLLECTED_AT,
     INGESTED_FILENAME,
     s.value:"code"::string as SWEETENING_METHOD_CODE,

@@ -1,12 +1,11 @@
 {{ config(materialized='view') }}
 
 -- Flattens RAW_DATA's JSON keys into columns for
--- GROCERYDBTPROJECT.RAW.KROGER_PRICING. raw_data here is the FULL Kroger
--- product object (same shape as stg_json_kroger_inventory, since both
--- pipelines land the identical raw response — see the NOTE in
--- Kroger_Pricing_*.py). LOCATION_ID is kept from the outer staging model
--- since it's NOT part of the product JSON itself (it's the store this
--- pull was scoped to, tracked separately by the pipeline).
+-- stg_kroger_product_snapshot (unions RAW.KROGER_PRICING and
+-- RAW.KROGER_INVENTORY — see that model's header). raw_data is the FULL
+-- Kroger product object, identical shape regardless of SOURCE_PIPELINE.
+-- LOCATION_ID/SOURCE_PIPELINE are kept from the outer staging model since
+-- they're NOT part of the product JSON itself.
 --
 -- ITEM_INFORMATION, RATINGS_AND_REVIEWS, and TEMPERATURE are fixed-shape
 -- objects, fully flattened here. All keys verified against the live data
@@ -16,15 +15,15 @@
 -- ITEMS, MANUFACTURER_DECLARATIONS, NUTRITION_INFORMATION, RESTRICTIONS,
 -- and SWEETENING_METHODS are left as VARIANT (arrays), NOT flattened
 -- here: they're variable-length per product, and at least one (ITEMS)
--- carries the actual price/inventory data this whole pipeline exists
--- for. Turning any of these into columns would require a separate model
+-- carries the actual price/inventory data these pipelines exist for.
+-- Turning any of these into columns would require a separate model
 -- at a different grain (one row per product+array-element), not just
 -- more columns on this one — a bigger decision than "add a column,"
 -- worth deciding deliberately rather than guessing.
 
 with source as (
 
-    select * from {{ ref('stg_kroger_pricing') }}
+    select * from {{ ref('stg_kroger_product_snapshot') }}
 
 ),
 
@@ -32,6 +31,7 @@ parsed as (
 
     select
         LOCATION_ID,
+        SOURCE_PIPELINE,
         COLLECTED_AT,
         INGESTED_FILENAME,
         parse_json(RAW_DATA) as json_data
@@ -44,6 +44,7 @@ renamed as (
 
     select
         LOCATION_ID,
+        SOURCE_PIPELINE,
         COLLECTED_AT,
         INGESTED_FILENAME,
 

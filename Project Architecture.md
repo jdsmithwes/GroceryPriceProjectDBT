@@ -46,7 +46,7 @@ flowchart TD
         end
     end
 
-    DBT["dbt staging layer<br/>28 models — see below"]
+    DBT["dbt staging layer<br/>16 models — see below"]
 
     subgraph FUTURE["Planned — Phase 4 / 5"]
         MARTS["dbt marts<br/>joins sources, business logic"]
@@ -98,63 +98,64 @@ flowchart TD
 
 `RAW.KROGER_LOCATIONS`, `KROGER_PRICING`, and `KROGER_INVENTORY` each store their Kroger API response as a `raw_data` JSON column, mostly untouched (per the raw-landing convention above). Getting from that to usable columns takes three distinct layers, not one big flatten — because "parse JSON into columns" and "explode an array into its own rows" are fundamentally different operations with different risk profiles, and collapsing them together would make it hard to trust what grain you're actually querying at.
 
+**Pricing and inventory are one model family, not two.** `Kroger_Pricing_*.py` and `Kroger_Inventory_*.py` both call the identical `/v1/products` endpoint and land the identical raw response (see the NOTE in `Kroger_Pricing_*.py`) — the two RAW tables differ only in *which script* collected each row, not in shape or content. Every downstream staging model built on top of them was therefore a byte-for-byte duplicate, just pointed at a different source table: 24 of the original 28 staging models existed purely because of this split. They've been consolidated into `stg_kroger_product_snapshot` (`UNION ALL` of both RAW tables, tagged with a `SOURCE_PIPELINE` column so provenance isn't lost) and everything downstream of it, cutting the Kroger staging layer from 28 models to 16 with no loss of grain or data.
+
 ```mermaid
 flowchart LR
     subgraph L1["Layer 1 — stg_kroger_*<br/>same grain as RAW · thin rename,<br/>adds real PRODUCT_ID/LOCATION_ID columns"]
         direction TB
         SK_CAT["stg_kroger_product_catalog"]
         SK_LOC["stg_kroger_locations"]
-        SK_PRC["stg_kroger_pricing"]
-        SK_INV["stg_kroger_inventory"]
+        SK_SNAP["stg_kroger_product_snapshot<br/>UNION ALL of pricing+inventory,<br/>tagged with SOURCE_PIPELINE"]
     end
 
     subgraph L2["Layer 2 — stg_json_kroger_*<br/>same grain · PARSE_JSON, flatten top-level<br/>keys + fixed-shape nested objects"]
         direction TB
         SJ_LOC["stg_json_kroger_locations"]
-        SJ_PRC["stg_json_kroger_pricing"]
-        SJ_INV["stg_json_kroger_inventory"]
+        SJ_SNAP["stg_json_kroger_product_snapshot"]
     end
 
-    subgraph L3["Layer 3 — array fan-outs (21 models)<br/>ONE MODEL PER ARRAY FIELD · grain changes<br/>to one row per parent + array element"]
+    subgraph L3["Layer 3 — array fan-outs (11 models)<br/>ONE MODEL PER ARRAY FIELD · grain changes<br/>to one row per parent + array element"]
         direction TB
         L3_LOC["locations_departments<br/>(1 model)"]
-        L3_PRC["pricing_* array models<br/>(10 models)"]
-        L3_INV["inventory_* array models<br/>(10 models, identical structure)"]
+        L3_SNAP["product_snapshot_* array models<br/>(10 models)"]
     end
 
     RAW1[("RAW.KROGER_PRODUCT_CATALOG")] --> SK_CAT
     RAW2[("RAW.KROGER_LOCATIONS")] --> SK_LOC --> SJ_LOC --> L3_LOC
-    RAW3[("RAW.KROGER_PRICING")] --> SK_PRC --> SJ_PRC --> L3_PRC
-    RAW4[("RAW.KROGER_INVENTORY")] --> SK_INV --> SJ_INV --> L3_INV
+    RAW3[("RAW.KROGER_PRICING")] --> SK_SNAP
+    RAW4[("RAW.KROGER_INVENTORY")] --> SK_SNAP
+    SK_SNAP --> SJ_SNAP --> L3_SNAP
 ```
 
 `KROGER_PRODUCT_CATALOG` stops at Layer 1 — it was already flattened into named columns at ingestion time (its shape is wide but stable, unlike the other three), so there's no `raw_data` to parse and no Layer 2/3 for it.
 
-**Why three layers, not one.** Layer 1 stays deliberately trivial — one-to-one with `RAW`, easy to eyeball against the source, nothing to get wrong. Layer 2 introduces real structure (JSON keys become typed columns) but is still guaranteed to be exactly one row per `RAW` row, because parsing an object's fields doesn't change how many objects there are. Layer 3 is where that guarantee breaks: exploding an array means a product with 8 nutrients produces 8 rows, each repeating every non-nutrient column — a materially different, easier-to-misuse shape than Layer 2. Keeping it as separate, explicitly-named models means anyone querying `stg_json_kroger_pricing` can trust it's still one row per product, and anyone who needs item- or nutrient-level detail has to deliberately opt into that grain by querying `stg_json_kroger_pricing_items` or `..._nutrition_information` instead.
+**Why three layers, not one.** Layer 1 stays deliberately trivial — one-to-one with `RAW`, easy to eyeball against the source, nothing to get wrong. Layer 2 introduces real structure (JSON keys become typed columns) but is still guaranteed to be exactly one row per `RAW` row, because parsing an object's fields doesn't change how many objects there are. Layer 3 is where that guarantee breaks: exploding an array means a product with 8 nutrients produces 8 rows, each repeating every non-nutrient column — a materially different, easier-to-misuse shape than Layer 2. Keeping it as separate, explicitly-named models means anyone querying `stg_json_kroger_product_snapshot` can trust it's still one row per product+pipeline pull, and anyone who needs item- or nutrient-level detail has to deliberately opt into that grain by querying `stg_json_kroger_product_snapshot_items` or `..._nutrition_information` instead.
 
-The pricing pipeline shows the reasoning most clearly, since two of its ten arrays (`images`, `nutrition_information`) have their *own* nested array inside every element, requiring a second fan-out on top of the first:
+The product-snapshot pipeline shows the reasoning most clearly, since two of its ten arrays (`images`, `nutrition_information`) have their *own* nested array inside every element, requiring a second fan-out on top of the first:
 
 ```mermaid
 flowchart TD
-    RAW[("RAW.KROGER_PRICING<br/>grain: 1 row / product+location<br/>raw_data = full Kroger product JSON")]
-    L1["stg_kroger_pricing<br/>grain: unchanged"]
-    L2["stg_json_kroger_pricing<br/>grain: unchanged · 29 top-level keys as columns —<br/>scalars cast, itemInformation/ratingsAndReviews/<br/>temperature flattened, 10 arrays left VARIANT"]
+    RAWP[("RAW.KROGER_PRICING")]
+    RAWI[("RAW.KROGER_INVENTORY")]
+    L1["stg_kroger_product_snapshot<br/>grain: 1 row / product+location+pipeline pull ·<br/>UNION ALL, SOURCE_PIPELINE = 'pricing'|'inventory'"]
+    L2["stg_json_kroger_product_snapshot<br/>grain: unchanged · 29 top-level keys as columns —<br/>scalars cast, itemInformation/ratingsAndReviews/<br/>temperature flattened, 10 arrays left VARIANT"]
 
-    RAW --> L1 --> L2
+    RAWP --> L1
+    RAWI --> L1
+    L1 --> L2
 
     L2 --> SIMPLE["6 single-level fan-outs<br/>grain: 1 row / product + element<br/>categories · allergens · aisle_locations ·<br/>sweetening_methods · alias_product_ids ·<br/>manufacturer_declarations"]
 
-    L2 --> ITEMS["stg_json_kroger_pricing_items<br/>grain: 1 row / product + item<br/>THE ACTUAL PRICE + INVENTORY DATA —<br/>price/fulfillment/inventory objects flattened inline"]
+    L2 --> ITEMS["stg_json_kroger_product_snapshot_items<br/>grain: 1 row / product + item<br/>THE ACTUAL PRICE + INVENTORY DATA —<br/>price/fulfillment/inventory objects flattened inline"]
 
-    L2 --> IMAGES["stg_json_kroger_pricing_images<br/>grain: 1 row / product + image"]
+    L2 --> IMAGES["stg_json_kroger_product_snapshot_images<br/>grain: 1 row / product + image"]
     IMAGES -->|"each image has its own<br/>nested sizes[] array"| IMAGES2["+ size<br/>grain: 1 row / product + image + size"]
 
-    L2 --> NUTR["stg_json_kroger_pricing_nutrition_information<br/>grain: 1 row / product + nutrition entry"]
+    L2 --> NUTR["stg_json_kroger_product_snapshot_nutrition_information<br/>grain: 1 row / product + nutrition entry"]
     NUTR -->|"each entry has its own<br/>nested nutrients[] array"| NUTR2["+ nutrient<br/>grain: 1 row / product + entry + nutrient<br/>(deepest structure in the dataset)"]
 
-    L2 -.->|"array is empty on<br/>every row today"| REST["stg_json_kroger_pricing_restrictions<br/>grain: 1 row / product + restriction<br/>currently 0 rows — element shape unknown<br/>until Kroger actually populates it"]
+    L2 -.->|"array is empty on<br/>every row today"| REST["stg_json_kroger_product_snapshot_restrictions<br/>grain: 1 row / product + restriction<br/>currently 0 rows — element shape unknown<br/>until Kroger actually populates it"]
 ```
-
-`stg_json_kroger_inventory` mirrors this exactly (same 10 array models, same structure) — its `raw_data` is the identical full product object, just pulled by a separate script (see the cost-effectiveness note in `.claude/instructions.md`).
 
 **How the exact shape was determined.** Every key and grain decision above came from querying the live data directly (`OBJECT_KEYS` unioned across every row via `LATERAL FLATTEN`), not from reading one sample response and assuming it generalized. That caught real surprises a single example would have missed: `promoPerUnitEstimate`/`regularPerUnitEstimate` turned out to be plain numbers, not nested objects as their names might suggest; most department records are just `{departmentId, name}`, but some (e.g. an off-site Pharmacy) also carry their own `address`/`geolocation`/`hours`/`offsite` fields other departments don't have.

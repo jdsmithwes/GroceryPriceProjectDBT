@@ -1,7 +1,7 @@
 {{ config(materialized='view') }}
 
 -- Fans out ITEMS (array of objects) — this is the field carrying the
--- actual per-store price and inventory data this whole pipeline exists
+-- actual per-store price and inventory data these pipelines exist
 -- for. Grain: one row per product + item variant (in practice, almost
 -- always exactly one item per product, but the API allows more). Nested
 -- price/inventory/fulfillment objects, and price's nested
@@ -11,13 +11,14 @@
 
 with source as (
 
-    select * from {{ ref('stg_json_kroger_pricing') }}
+    select * from {{ ref('stg_json_kroger_product_snapshot') }}
 
 )
 
 select
     LOCATION_ID,
     PRODUCT_ID,
+    SOURCE_PIPELINE,
     COLLECTED_AT,
     INGESTED_FILENAME,
 
