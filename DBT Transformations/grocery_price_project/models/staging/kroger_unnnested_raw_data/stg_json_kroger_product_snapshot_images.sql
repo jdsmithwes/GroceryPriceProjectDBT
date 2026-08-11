@@ -6,7 +6,7 @@
 
 with source as (
 
-    select * from {{ ref('stg_json_kroger_pricing') }}
+    select * from {{ ref('stg_json_kroger_product_snapshot') }}
 
 ),
 
@@ -15,6 +15,7 @@ images as (
     select
         LOCATION_ID,
         PRODUCT_ID,
+        SOURCE_PIPELINE,
         COLLECTED_AT,
         INGESTED_FILENAME,
         i.value as image
@@ -27,6 +28,7 @@ images as (
 select
     LOCATION_ID,
     PRODUCT_ID,
+    SOURCE_PIPELINE,
     COLLECTED_AT,
     INGESTED_FILENAME,
     image:"perspective"::string as PERSPECTIVE,

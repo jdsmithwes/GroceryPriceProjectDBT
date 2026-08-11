@@ -28,10 +28,24 @@ are added. In the meantime, GROCERY_KEYWORDS filters items client-side by
 matching against the real "categoryPath" field (e.g.
 "Food/Snacks/Chips"), confirmed from Walmart's sample response.
 
-WALMART_KEY_PATH (credentials/walmart/WM_IO_private_key.pem) does not
-exist on disk yet, so this hasn't been tested against the live API —
-only the signing algorithm and the pagination/parsing logic (against a
-mocked response matching Walmart's documented schema) have been verified.
+Live-tested 2026-08-11 with WALMART_CONSUMER_ID set to the Stage consumer
+ID (a9d00627-32ca-4016-acc5-4dbe58ea5009): a single-request smoke test
+against the real endpoint returned a well-formed 401 — signing, headers,
+and request format are all correct (Walmart's server parsed and rejected
+it cleanly, not a malformed-request error):
+
+    {"details":{"Description":"Public Key not found for  Consumer id :
+    a9d00627-...","wm_svc.env":"prod"}}
+
+The "wm_svc.env":"prod" in that response confirms the Affiliate API has
+no separate Stage host to test against — developer.api.walmart.com IS
+the only environment, and it only recognizes public keys uploaded via
+the portal's Production "Upload Public Key" flow. That flow is the exact
+one silently failing (see WALMARTIO-6695 in .claude/instructions.md), so
+this 401 is the *same* blocker surfacing through the API instead of the
+portal UI, not a new problem — a Stage-only consumer ID can't work
+around it. Full crawl not attempted; every call would fail identically
+until Prod access is granted.
 """
 
 import base64
