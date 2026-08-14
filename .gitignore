@@ -1,6 +1,13 @@
 # Secrets — never commit
 .env
 credentials/
+*.pem
+*.p8
+*.p12
+*.pfx
+*_private_key*
+*_rsa_key_pair*
+WM_IO_*
 
 # Python
 __pycache__/
