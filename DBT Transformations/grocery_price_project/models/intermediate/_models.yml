@@ -1,0 +1,75 @@
+version: 2
+
+models:
+  - name: int_kroger_price_history
+    config:
+      materialized: view
+      group: kroger
+    description: >
+      SCD Type 2 price history derived from stg_json_kroger_product_snapshot_items.
+      One row per contiguous span of unchanged PRICE_REGULAR/PRICE_PROMO for a
+      given PRODUCT_ID + LOCATION_ID — collapses the raw layer's append-only
+      history (every ingestion run lands a new row) down to actual price
+      change events, rather than one row per collection run. Filtered to rows
+      with a PRICE_REGULAR and/or PRICE_PROMO — products with neither are
+      tracked instead in int_kroger_unpriced_history, at the same grain. A
+      product's first surviving version here after being unpriced has a
+      VALID_FROM equal to the date its pricing became active.
+    columns:
+      - name: PRODUCT_ID
+        description: "Kroger product id — see stg_kroger_product_catalog for the leading-zero gotcha."
+        data_tests:
+          - not_null
+      - name: LOCATION_ID
+        description: "Kroger location id. Grain is PRODUCT_ID + LOCATION_ID, not PRODUCT_ID alone — the same product can be priced differently at different stores."
+        data_tests:
+          - not_null
+      - name: PRICE_REGULAR
+        description: "Non-promotional shelf price at the start of this version's validity window. Constant for the entire version by construction. Every row here has a PRICE_REGULAR and/or PRICE_PROMO by construction (see model description) — this being NULL means PRICE_PROMO was populated without a PRICE_REGULAR, an edge case worth flagging immediately rather than tolerating (0/10,675 rows as of 2026-08-14)."
+        data_tests:
+          - not_null
+      - name: PRICE_PROMO
+        description: "Promotional price, if any, at the start of this version's validity window. NULL when no promo was active — a promo starting or ending is itself a version boundary (see model description)."
+      - name: VALID_FROM
+        description: "COLLECTED_AT of the first observation where this exact PRICE_REGULAR/PRICE_PROMO combination was seen. Inclusive lower bound. For a product/location's first row after a span in int_kroger_unpriced_history, this is the date pricing became active."
+        data_tests:
+          - not_null
+      - name: VALID_TO
+        description: "COLLECTED_AT of the next version's VALID_FROM — i.e. the first moment the price was observed to have changed. Exclusive upper bound. NULL for the current version."
+      - name: LAST_SEEN_AT
+        description: "COLLECTED_AT of the most recent observation that still had this same price — the last collection run before (or the most recent run, if this is the current version) a change was detected. Useful to distinguish 'observed once, long ago' from 'repeatedly confirmed unchanged.'"
+      - name: IS_CURRENT
+        description: "TRUE for the most recent price version of this product+location (VALID_TO IS NULL) — exactly one TRUE row per PRODUCT_ID + LOCATION_ID, assuming at least one priced observation exists."
+
+  - name: int_kroger_unpriced_history
+    config:
+      materialized: view
+      group: kroger
+    description: >
+      Companion to int_kroger_price_history: SCD Type 2 history of spans
+      where a PRODUCT_ID + LOCATION_ID had neither a PRICE_REGULAR nor a
+      PRICE_PROMO — not actively carried/priced at that store. Same
+      collapse-consecutive-observations pattern, but versioned on
+      priced-vs-unpriced state rather than on price value. A row's
+      IS_CURRENT flips from TRUE to FALSE the moment a product that was
+      unpriced gets a price again — VALID_TO on that row and the new
+      VALID_FROM in int_kroger_price_history are the same timestamp.
+    columns:
+      - name: PRODUCT_ID
+        description: "Kroger product id."
+        data_tests:
+          - not_null
+      - name: LOCATION_ID
+        description: "Kroger location id. Grain is PRODUCT_ID + LOCATION_ID, matching int_kroger_price_history."
+        data_tests:
+          - not_null
+      - name: VALID_FROM
+        description: "COLLECTED_AT of the first observation in this unpriced span. Inclusive lower bound."
+        data_tests:
+          - not_null
+      - name: VALID_TO
+        description: "COLLECTED_AT of the first observation after pricing resumed — matches the VALID_FROM of the corresponding new version in int_kroger_price_history. NULL if the product is still unpriced as of the most recent observation."
+      - name: LAST_SEEN_AT
+        description: "COLLECTED_AT of the most recent observation still confirmed unpriced within this span."
+      - name: IS_CURRENT
+        description: "TRUE if this product+location is unpriced as of the most recent observation (VALID_TO IS NULL) — meaning it currently has no corresponding row in int_kroger_price_history. FALSE once pricing has resumed at least once."
