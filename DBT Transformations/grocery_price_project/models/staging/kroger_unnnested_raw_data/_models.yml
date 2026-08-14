@@ -19,13 +19,25 @@ models:
     config:
       materialized: view
       group: kroger
-    description: "The entire Kroger product catalog."
+    description: >
+      The entire Kroger product catalog. Raw-landing convention applies:
+      append-only across collection runs, so the same PRODUCT_ID
+      legitimately reappears with a new COLLECTED_AT every time
+      entire_productcatalog_kroger.py is re-run — PRODUCT_ID alone is NOT
+      unique at this grain, only unique per collection run (the ingestion
+      script de-dupes within a single run before upload, keyed by
+      productId). See the model-level unique_combination_of_columns test.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - PRODUCT_ID
+              - INGESTED_FILENAME
     columns:
       - name: PRODUCT_ID
-        description: "Kroger's unique product identifier ('productId' in the API). Has meaningful leading zeros — always read/joined as a string, never a number (see instructions.md's Kroger gotcha)."
+        description: "Kroger's unique product identifier ('productId' in the API). Has meaningful leading zeros — always read/joined as a string, never a number (see instructions.md's Kroger gotcha). Not unique alone at this grain — see model description."
         data_tests:
           - not_null
-          - unique
       - name: UPC
         description: "The product's UPC barcode ('upc' in the API). Same leading-zero gotcha as PRODUCT_ID — kept as a string."
       - name: BRAND
@@ -51,7 +63,7 @@ models:
 
   - name: stg_kroger_locations
     config:
-      materialized: ephemeral
+      materialized: view
       group: kroger
     description: "Layer 1 thin rename over RAW.KROGER_LOCATIONS — pulls LOCATION_ID out of raw_data as a real join-key column; everything else about the location stays untouched JSON in RAW_DATA per the raw-landing convention (see instructions.md)."
     columns:
@@ -70,7 +82,7 @@ models:
 
   - name: stg_kroger_product_snapshot
     config:
-      materialized: ephemeral
+      materialized: view
       group: kroger
     description: >
       Union of RAW.KROGER_PRICING and RAW.KROGER_INVENTORY. Both pipelines
