@@ -20,6 +20,15 @@ once you know which store(s) you care about.
 
 Output is written directly to S3 (no local file), as a new timestamped key
 per run so nothing is overwritten between pulls.
+
+All HTTP calls share a single requests.Session with a connection pool sized
+to MAX_WORKERS, so the thread pool reuses TCP/TLS connections instead of
+each thread opening a fresh one per request — this is both cheaper (fewer
+handshakes) and less prone to the read timeouts a burst of cold connections
+can trigger against Kroger's servers. Every few rounds, progress is
+checkpointed to a fixed S3 key (overwritten in place, not accumulated) so a
+mid-run crash doesn't waste the API calls already spent — the checkpoint is
+deleted once the run finishes successfully.
 """
 
 import base64
@@ -36,12 +45,14 @@ from pathlib import Path
 import boto3
 import pandas as pd
 import requests
+from botocore.exceptions import ClientError
 from dotenv import load_dotenv
+from requests.adapters import HTTPAdapter
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
 
 TOKEN_URL = "https://api.kroger.com/v1/connect/oauth2/token"
@@ -53,9 +64,13 @@ DAILY_CALL_BUDGET = 10_000  # Kroger's documented rate limit
 
 MAX_WORKERS = 10            # concurrent in-flight requests
 MAX_REQUESTS_PER_SECOND = 8  # conservative pace to stay well clear of throttling
+REQUEST_TIMEOUT = (10, 45)  # (connect, read) seconds — read gets extra slack under load
+
+CHECKPOINT_EVERY_ROUNDS = 2  # upload progress this often so a crash doesn't lose spent API calls
 
 S3_BUCKET = "grocerydbtprojectrawdata"
 S3_PREFIX = "kroger/"
+S3_CHECKPOINT_KEY = f"{S3_PREFIX}_checkpoints/kroger_product_catalog_in_progress.csv"
 
 # Search terms to iterate over. Kroger has no category-listing endpoint, so
 # broad grocery terms are used as a stand-in for "browse everything". Expand
@@ -72,13 +87,26 @@ SEARCH_TERMS = [
 ]
 
 
+def build_session(pool_size: int = MAX_WORKERS) -> requests.Session:
+    """Shared session with a connection pool sized to the thread pool, so
+    concurrent requests reuse TCP/TLS connections instead of each thread
+    paying a fresh handshake — cheaper and less prone to read timeouts under
+    load. requests.Session is safe to share across threads for issuing
+    requests concurrently."""
+    session = requests.Session()
+    adapter = HTTPAdapter(pool_connections=pool_size, pool_maxsize=pool_size)
+    session.mount("https://", adapter)
+    return session
+
+
 class KrogerAuth:
     """Thread-safe token cache. Only one thread refreshes at a time; the
     rest reuse the cached token once it lands."""
 
-    def __init__(self, client_id: str, client_secret: str):
+    def __init__(self, client_id: str, client_secret: str, session: requests.Session):
         self.client_id = client_id
         self.client_secret = client_secret
+        self.session = session
         self._access_token = None
         self._expires_at = 0.0
         self._lock = threading.Lock()
@@ -91,14 +119,14 @@ class KrogerAuth:
             credentials = f"{self.client_id}:{self.client_secret}".encode("utf-8")
             encoded_credentials = base64.b64encode(credentials).decode("utf-8")
 
-            response = requests.post(
+            response = self.session.post(
                 TOKEN_URL,
                 headers={
                     "Authorization": f"Basic {encoded_credentials}",
                     "Content-Type": "application/x-www-form-urlencoded",
                 },
                 data={"grant_type": "client_credentials", "scope": "product.compact"},
-                timeout=30,
+                timeout=REQUEST_TIMEOUT,
             )
             response.raise_for_status()
             payload = response.json()
@@ -156,22 +184,32 @@ class CallBudget:
 
 
 def fetch_products_page(
-    auth: KrogerAuth, rate_limiter: RateLimiter, term: str, start: int
+    session: requests.Session, auth: KrogerAuth, rate_limiter: RateLimiter, term: str, start: int
 ) -> list[dict]:
-    """Fetch a single page of results, retrying on 429/5xx with backoff."""
+    """Fetch a single page of results, retrying on 429/5xx and network
+    errors (timeouts, connection resets) with backoff."""
     max_retries = 3
     for attempt in range(max_retries):
         rate_limiter.acquire()
-        response = requests.get(
-            PRODUCTS_URL,
-            headers={"Authorization": f"Bearer {auth.get_token()}"},
-            params={
-                "filter.term": term,
-                "filter.limit": PAGE_LIMIT,
-                "filter.start": start,
-            },
-            timeout=30,
-        )
+        try:
+            response = session.get(
+                PRODUCTS_URL,
+                headers={"Authorization": f"Bearer {auth.get_token()}"},
+                params={
+                    "filter.term": term,
+                    "filter.limit": PAGE_LIMIT,
+                    "filter.start": start,
+                },
+                timeout=REQUEST_TIMEOUT,
+            )
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+            wait = 2 ** attempt
+            logger.warning(
+                "term=%r start=%s network error (%s), retrying in %ss (attempt %s/%s)",
+                term, start, exc, wait, attempt + 1, max_retries,
+            )
+            time.sleep(wait)
+            continue
 
         if response.status_code == 200:
             return response.json().get("data", [])
@@ -219,13 +257,14 @@ def flatten_product(product: dict) -> dict:
     }
 
 
-def collect_catalog(auth: KrogerAuth, terms: list[str]) -> pd.DataFrame:
+def collect_catalog(session: requests.Session, auth: KrogerAuth, terms: list[str]) -> pd.DataFrame:
     rate_limiter = RateLimiter(MAX_REQUESTS_PER_SECOND)
     budget = CallBudget(DAILY_CALL_BUDGET)
     rows: dict[str, dict] = {}  # keyed by productId to de-dupe
 
     active_terms = list(terms)
     start = 0
+    round_number = 0
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         while active_terms and start <= MAX_START:
@@ -234,22 +273,35 @@ def collect_catalog(auth: KrogerAuth, terms: list[str]) -> pd.DataFrame:
                 logger.warning("Reached daily call budget (%s), stopping early", DAILY_CALL_BUDGET)
                 break
 
+            round_number += 1
             logger.info(
                 "Round start=%s: %s active terms (unique products so far: %s, calls so far: %s)",
                 start, len(schedulable), len(rows), budget.count,
             )
 
             futures = {
-                executor.submit(fetch_products_page, auth, rate_limiter, term, start): term
+                executor.submit(fetch_products_page, session, auth, rate_limiter, term, start): term
                 for term in schedulable
             }
 
             next_active_terms = []
             for future, term in futures.items():
-                products = future.result()
+                try:
+                    products = future.result()
+                except Exception:
+                    # fetch_products_page already retries transient failures
+                    # internally; anything still raised here is unexpected
+                    # (e.g. a malformed response) — skip this term/page
+                    # rather than losing every other in-flight result.
+                    logger.exception("term=%r start=%s failed unexpectedly, skipping", term, start)
+                    continue
 
                 for product in products:
-                    row = flatten_product(product)
+                    try:
+                        row = flatten_product(product)
+                    except Exception:
+                        logger.exception("Failed to parse product, skipping: %r", product)
+                        continue
                     product_id = row["productId"]
                     if product_id:
                         rows[product_id] = row
@@ -259,6 +311,12 @@ def collect_catalog(auth: KrogerAuth, terms: list[str]) -> pd.DataFrame:
 
             active_terms = next_active_terms
             start += PAGE_LIMIT
+
+            if round_number % CHECKPOINT_EVERY_ROUNDS == 0:
+                try:
+                    upload_df_to_s3(pd.DataFrame(rows.values()), S3_BUCKET, S3_CHECKPOINT_KEY)
+                except Exception:
+                    logger.exception("Checkpoint upload failed, continuing run")
 
     logger.info("Finished. Total API calls: %s, unique products: %s", budget.count, len(rows))
     return pd.DataFrame(rows.values())
@@ -273,16 +331,26 @@ def upload_df_to_s3(df: pd.DataFrame, bucket: str, key: str) -> None:
     logger.info("Uploaded %s rows to s3://%s/%s", len(df), bucket, key)
 
 
+def delete_checkpoint(bucket: str, key: str) -> None:
+    s3 = boto3.client("s3")
+    try:
+        s3.delete_object(Bucket=bucket, Key=key)
+    except ClientError:
+        logger.exception("Failed to delete checkpoint s3://%s/%s (non-fatal)", bucket, key)
+
+
 def main() -> pd.DataFrame:
     client_id = os.environ["KROGER_CLIENT_ID"]
     client_secret = os.environ["KROGER_CLIENT_SECRET"]
 
-    auth = KrogerAuth(client_id, client_secret)
-    df = collect_catalog(auth, SEARCH_TERMS)
+    session = build_session()
+    auth = KrogerAuth(client_id, client_secret, session)
+    df = collect_catalog(session, auth, SEARCH_TERMS)
 
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
     key = f"{S3_PREFIX}kroger_product_catalog_{timestamp}.csv"
     upload_df_to_s3(df, S3_BUCKET, key)
+    delete_checkpoint(S3_BUCKET, S3_CHECKPOINT_KEY)
 
     return df
 

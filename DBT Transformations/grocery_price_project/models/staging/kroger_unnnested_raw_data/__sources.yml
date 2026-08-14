@@ -10,28 +10,28 @@ sources:
         description: The table contains records of inventory items, specifically products stored in various locations. Each record represents a single product and includes details about its location and collection status.
         config:
 
-          loaded_at_field: collected_at
+          loaded_at_field: "collected_at"
           freshness:
             warn_after: {count: 30, period: day}
             error_after: {count: 45, period: day}
       - name: kroger_locations
         description: The table contains records of locations, specifically stores or facilities where products are stored.
         config:
-          loaded_at_field: collected_at
+          loaded_at_field: "collected_at"
           freshness:
             warn_after: {count: 30, period: day}
             error_after: {count: 45, period: day}
       - name: kroger_pricing
         description: The table contains records of product pricing data. Each record represents a single product and includes details about its price and location, as well as the source of the data and the file it was ingested from.
         config:
-          loaded_at_field: collected_at
+          loaded_at_field: "collected_at"
           freshness:
             warn_after: {count: 30, period: day}
             error_after: {count: 45, period: day}
       - name: kroger_product_catalog
         description: The table contains product information, specifically a catalog of items sold by a grocery store. Each record represents a single product and includes details about its attributes, origin, and characteristics.
         config:
-          loaded_at_field: '"collected_at"'
+          loaded_at_field: "collected_at"
           freshness:
             warn_after: {count: 30, period: day}
             error_after: {count: 45, period: day}

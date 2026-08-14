@@ -22,6 +22,8 @@
 - `Project Architecture.md` (repo root) — "Kroger Staging Layer (dbt)" section has the full 3-layer lineage diagrams + reasoning for why arrays are separate models from objects
 - `DBT Transformations/grocery_price_project/models/staging/kroger_unnnested_raw_data/_models.yml` — every column, for every Layer 1/2 model, in one place; fill in descriptions/tests here as you go
 
+**PROJECT_ROOT gotcha, recurring**: every ingestion script computes `PROJECT_ROOT = Path(__file__).resolve()` plus N `.parent`s, then does `load_dotenv(PROJECT_ROOT / ".env")` — get the parent count wrong and `.env` silently fails to load (no exception), surfacing later as a confusing `KeyError` on whatever env var is read first. The right count is **the number of folders between the repo root and the script**, e.g. 4 for `API Scripts/Kroger Scripts/Product Catalogs/foo.py` (`API Scripts` → `Kroger Scripts` → `Product Catalogs` → repo root). This bit all four Kroger scripts on 2026-08-14 after the `Kroger Scripts` folder was inserted a level deeper without updating them (fixed then); it already bit the Walmart scripts once too, fixed by coincidence when they moved to a shallower folder. **Any time a script gets moved into/out of a folder, recheck this line** — don't assume it still resolves correctly. Quick check: `python3 -c "from pathlib import Path; print(Path('<script path>').resolve().parent.parent...)"` and confirm it prints the repo root.
+
 ---
 
 ## Credentials & Blockers
