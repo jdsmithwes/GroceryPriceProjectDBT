@@ -1,0 +1,44 @@
+{
+  "family": "grocery-ingest",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::573509103721:role/GroceryIngestTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "grocery-ingest",
+      "image": "573509103721.dkr.ecr.us-east-1.amazonaws.com/grocery-ingest:latest",
+      "essential": true,
+      "environment": [
+        { "name": "AWS_REGION", "value": "us-east-1" }
+      ],
+      "secrets": [
+        {
+          "name": "KROGER_CLIENT_ID",
+          "valueFrom": "arn:aws:secretsmanager:us-east-1:573509103721:secret:grocery-ingest/credentials-YTuek1:KROGER_CLIENT_ID::"
+        },
+        {
+          "name": "KROGER_CLIENT_SECRET",
+          "valueFrom": "arn:aws:secretsmanager:us-east-1:573509103721:secret:grocery-ingest/credentials-YTuek1:KROGER_CLIENT_SECRET::"
+        },
+        {
+          "name": "AWS_ACCESS_KEY_ID",
+          "valueFrom": "arn:aws:secretsmanager:us-east-1:573509103721:secret:grocery-ingest/credentials-YTuek1:AWS_ACCESS_KEY_ID::"
+        },
+        {
+          "name": "AWS_SECRET_ACCESS_KEY",
+          "valueFrom": "arn:aws:secretsmanager:us-east-1:573509103721:secret:grocery-ingest/credentials-YTuek1:AWS_SECRET_ACCESS_KEY::"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/grocery-ingest",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "grocery-ingest"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "Name": "grocery-ingest-saturday-continue",
+  "Description": "Finishes the Kroger sweep Friday's run couldn't complete within the 10K/day API budget, Saturday 9am ET (see Orchestration/README.md)",
+  "ScheduleExpression": "cron(0 9 ? * SAT *)",
+  "ScheduleExpressionTimezone": "America/New_York",
+  "FlexibleTimeWindow": { "Mode": "OFF" },
+  "Target": {
+    "Arn": "arn:aws:ecs:us-east-1:573509103721:cluster/grocery-ingest-cluster",
+    "RoleArn": "arn:aws:iam::573509103721:role/GroceryIngestSchedulerRole",
+    "EcsParameters": {
+      "TaskDefinitionArn": "arn:aws:ecs:us-east-1:573509103721:task-definition/grocery-ingest:1",
+      "LaunchType": "FARGATE",
+      "NetworkConfiguration": {
+        "awsvpcConfiguration": {
+          "Subnets": ["subnet-0cd3649c064d976d7"],
+          "SecurityGroups": ["sg-0913e52b023b9f5b2"],
+          "AssignPublicIp": "ENABLED"
+        }
+      }
+    },
+    "Input": "{\"containerOverrides\":[{\"name\":\"grocery-ingest\",\"environment\":[{\"name\":\"RUN_MODE\",\"value\":\"saturday_kroger_continue\"}]}]}"
+  }
+}

@@ -378,9 +378,21 @@ def collect_pricing(
     return total_rows, locations_completed_this_run
 
 
-def main() -> None:
+def delete_checkpoint(bucket: str, key: str) -> None:
+    # S3 DeleteObject is idempotent — succeeds even if the key never existed
+    # (e.g. the very first run), so no NoSuchKey handling needed here unlike
+    # load_completed_locations' read path.
+    s3 = boto3.client("s3")
+    s3.delete_object(Bucket=bucket, Key=key)
+    logger.info("Deleted checkpoint s3://%s/%s — this run starts a full sweep", bucket, key)
+
+
+def main(reset_checkpoint: bool = False) -> None:
     client_id = os.environ["KROGER_CLIENT_ID"]
     client_secret = os.environ["KROGER_CLIENT_SECRET"]
+
+    if reset_checkpoint:
+        delete_checkpoint(S3_BUCKET, S3_CHECKPOINT_KEY)
 
     session = build_session()
     auth = KrogerAuth(client_id, client_secret, session)
@@ -414,4 +426,16 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    ap = argparse.ArgumentParser(description="Kroger pricing collection")
+    ap.add_argument(
+        "--reset-checkpoint", action="store_true",
+        help="Delete the S3 checkpoint before running, forcing a full re-pull of "
+             "every known location instead of skipping ones already marked "
+             "complete. For the weekly scheduled refresh (see "
+             "Snowflake Scripts/../orchestration docs) — not for routine local "
+             "runs, where you almost always want to resume, not restart.",
+    )
+    args = ap.parse_args()
+    main(reset_checkpoint=args.reset_checkpoint)
