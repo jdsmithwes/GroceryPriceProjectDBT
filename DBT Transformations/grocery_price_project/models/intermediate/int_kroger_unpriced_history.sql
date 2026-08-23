@@ -1,5 +1,10 @@
-{{ config(materialized='view') }}
+{{ config(materialized='table') }}
 
+-- Materialized as a table (not view): same reasoning as
+-- int_kroger_price_history — 12 queries/7 days measured at ~1.19s and
+-- ~121MB scanned each as a view, negligible storage cost to avoid that.
+-- Rerun `dbt run` after each new pricing collection run to refresh it.
+--
 -- Companion to int_kroger_price_history: tracks SPANS where a product
 -- had NEITHER a PRICE_REGULAR NOR a PRICE_PROMO at a given
 -- PRODUCT_ID + LOCATION_ID — i.e. not actively carried/priced at that
