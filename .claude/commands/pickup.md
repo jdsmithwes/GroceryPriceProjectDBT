@@ -15,7 +15,11 @@ Do this before proposing any code:
    Their absence means no endpoint has been verified live yet — say so
    plainly rather than assuming the config is correct.
 3. Report which of these is the first unresolved step:
-   - ALDI store discovery endpoint confirmed?
+   - **ALDI's API host confirmed working?** As of 2026-08-23, `api.aldi.us`
+     (every URL in `AldiAdapter`) is confirmed NOT to resolve — see D12.
+     This blocks every other ALDI step below it; check whether it's been
+     fixed before assuming anything past this point is even attemptable.
+   - ALDI store discovery endpoint confirmed (separate from the host issue)?
    - `PUBLIX_CONFIG` paths confirmed against a real payload?
    - Shelf-pricing `serviceType` confirmed via `calibrate`?
    - First live run completed and surface partitions inspected (locally and

@@ -1,7 +1,8 @@
 # grocery_ingest
 
-Store-scoped grocery price ingestion. Currently: **ALDI** (verified) and
-**Publix** (needs endpoint confirmation).
+Store-scoped grocery price ingestion. Currently: **ALDI** (confirmed
+broken as coded — its API host doesn't resolve, see D12) and **Publix**
+(needs endpoint confirmation, never yet attempted live).
 
 ## Layout
 
@@ -52,11 +53,20 @@ still probing/calibrating and not yet ready to land anything durably).
 
 ## What's settled
 
-- **ALDI store id is `merchantReference`** (format `NNN-NNN`, e.g. `479-022`).
-  Different value → different prices. Verified endpoint shape against
-  github.com/stiles/aldi (MIT).
+- **ALDI's endpoint host is broken.** `api.aldi.us` — every URL
+  `AldiAdapter` uses — does not resolve, confirmed 2026-08-23 via two
+  independent live attempts plus an out-of-band `dig`/`curl` check from
+  an unrelated network. Not a Fargate/cloud-blocking issue; the domain
+  has no DNS record at all right now. Everything below this bullet that
+  claims "verified" is verified against an open-source reference
+  (`github.com/stiles/aldi`) that has apparently drifted, not against
+  live data this codebase has actually fetched. See D12.
+- **ALDI store id is `merchantReference`** (format `NNN-NNN`, e.g. `479-022`)
+  — per the same now-unreliable reference; unconfirmed against live data.
 - **ALDI full sweep beats keyword search.** ~7,800 SKUs / 48 per page = 163
-  requests, ~6 min at 0.5 req/s. Gives assortment + delisting signal free.
+  requests, ~6 min at 0.5 req/s. Gives assortment + delisting signal free
+  — reasoning stands regardless of D12, once there's a working host to
+  sweep.
 - **Prices are integer cents** in `prices[0].grossAmount`. `formattedPrice`
   is the fallback only — string parsing breaks on `"2/$5.00"` and `"$1.29/lb"`.
 - **Grain is `(retailer, store_id, sku, day)`**, hashed into
@@ -64,15 +74,21 @@ still probing/calibrating and not yet ready to land anything durably).
 
 ## Open questions
 
-1. **ALDI store discovery is unverified.** `STORE_URL` is a guess; the adapter
-   falls back to a hardcoded service point so the pipeline still runs. Probe
-   the store selector on new.aldi.us to find the real path.
-2. **All of Publix is unverified.** See run order step 1.
-3. **Publix + Instacart — now handled, still needs your confirmation.**
+1. **ALDI's API host doesn't resolve — find the real one (D12).** This
+   blocks everything else about ALDI; nothing below can be meaningfully
+   attempted until this is fixed. Not a guess-and-hardcode fix — needs
+   actual confirmation, e.g. inspecting Network tab requests on
+   new.aldi.us in a browser.
+2. **ALDI store discovery is unverified**, independent of #1. `STORE_URL`
+   is a guess; the adapter falls back to a hardcoded service point so the
+   pipeline degrades gracefully. Probe the store selector on new.aldi.us
+   once a working API host exists.
+3. **All of Publix is unverified.** See run order step 1.
+4. **Publix + Instacart — now handled, still needs your confirmation.**
    See "Price surfaces" below. The adapter detects and quarantines marketplace
    pricing, but you still need to confirm the right `serviceType` value via
    the probe.
-4. **No UPC from ALDI.** ~90% private label, so there's often no UPC to match
+5. **No UPC from ALDI.** ~90% private label, so there's often no UPC to match
    on at all. Cross-retailer joins need fuzzy name+size matching — this is the
    real work of the dbt layer, not an afterthought.
 
@@ -125,21 +141,27 @@ this on a schedule.
 
 ## Picking up from here
 
-Nothing has been run against live endpoints yet — everything below is verified
-only against mocked payloads and one open-source reference. In order:
+Two live attempts have now actually been made (2026-08-23, via
+`Orchestration/`) — ALDI's failed with a confirmed root cause (D12), Publix
+has still never been attempted. In order:
 
-1. **Probe ALDI.** Only store discovery is unverified; the catalog path is
-   known good. Find the real service-point lookup, then drop the `479-022`
-   fallback in `AldiAdapter.discover_stores`.
-2. **Probe Publix.** Fix every path in `PUBLIX_CONFIG` against the real
+1. **Fix ALDI's API host (D12).** `api.aldi.us` doesn't resolve — find
+   Aldi's real current API host, most directly by inspecting Network tab
+   requests while browsing new.aldi.us in a browser. Update `CATALOG_URL`/
+   `STORE_URL`/`PRODUCT_URL` in `adapters.py` once confirmed — don't guess.
+2. **Then probe ALDI properly** — store discovery is still unverified even
+   once the host is fixed; drop the `479-022` fallback in
+   `AldiAdapter.discover_stores` once the real service-point lookup is
+   confirmed.
+3. **Probe Publix.** Fix every path in `PUBLIX_CONFIG` against the real
    payload. Assume all of it is wrong until proven otherwise.
-3. **Calibrate surfaces.** Confirm which `serviceType` returns shelf pricing,
+4. **Calibrate surfaces.** Confirm which `serviceType` returns shelf pricing,
    and measure the delivery-vs-instore spread. This gates whether any Publix
    number is trustworthy.
-4. **First real run.** ALDI full sweep (~6 min) + a five-item Publix basket.
-   Check the `surface=` partitions before believing anything.
-5. **Then the dbt layer** — unit parsing (`"8.25 oz"` → value + uom), fuzzy
+5. **First real successful run.** ALDI full sweep (~6 min) + a five-item
+   Publix basket. Check the `surface=` partitions before believing anything.
+6. **Then the dbt layer** — unit parsing (`"8.25 oz"` → value + uom), fuzzy
    ALDI↔Publix matching (no shared UPC, see D5/open threads), and a
    comparable-basket model gated on `is_comparable = true`.
 
-Design rationale for all of the above is in `DECISIONS.md`, keyed D1–D10.
+Design rationale for all of the above is in `DECISIONS.md`, keyed D1–D12.

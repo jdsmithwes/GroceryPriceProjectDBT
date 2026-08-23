@@ -70,7 +70,7 @@ official feed or drop the source.
 
 ## D4 — ALDI hardcoded, Publix config-driven
 
-**Status:** ALDI settled · Publix provisional
+**Status:** ALDI **revoked as of 2026-08-23 — see D12** · Publix provisional
 
 **Context.** I know very different amounts about the two.
 
@@ -234,15 +234,62 @@ skips this entirely for local-only exploration.
 
 ---
 
+## D12 — `api.aldi.us` does not resolve; D4's "ALDI verified" is revoked
+
+**Status:** confirmed broken, unfixed
+
+**Context.** First two live attempts against `AldiAdapter`
+(2026-08-23, via `Orchestration/`'s Fargate pipeline — see that folder's
+README) both failed identically: `httpx.ConnectError: [Errno -5] No
+address associated with hostname` on `api.aldi.us`. Not a fluke, not
+Fargate-specific — verified independently with `dig`/`curl` from an
+unrelated network: the hostname has no DNS record at all, from anywhere,
+right now. `new.aldi.us` (the real customer site, already referenced in
+`EXTRA_HEADERS`) resolves fine and is Akamai-fronted.
+
+**Decision (forced by evidence, not chosen).** D4's claim that "ALDI's
+shape is verified" no longer holds. The open-source reference this was
+built from (`github.com/stiles/aldi`) has almost certainly drifted since
+it was written — Aldi likely migrated their API to a different host.
+`CATALOG_URL`, `STORE_URL`, and `PRODUCT_URL` in `AldiAdapter` all need
+the real current host substituted in before ALDI can produce a single
+row. This is not a retry-and-it-works situation (confirmed via two
+independent attempts) and not an infrastructure problem (confirmed via
+independent DNS lookup outside the affected environment).
+
+**Why this matters beyond just "one broken URL."** Every other ALDI
+design decision in this file (D1 grain, D6 full-sweep-not-search, D7
+integer-cents parsing, D8 SkuCache) is reasoning about the *shape* of
+data ALDI returns — none of it can be re-verified until a reachable host
+is found, because zero real ALDI data has ever actually been collected
+by this codebase. Treat every "ALDI settled" status elsewhere in this
+file as **provisional pending a working host**, not actually settled.
+
+**Next step.** Find Aldi's real current API host — most direct path is
+inspecting Network tab requests while browsing `new.aldi.us` in a
+browser (the same technique `adapters.py probe` automates for Publix,
+just manually this time since there's no known correct URL yet to probe
+against). Do not guess a replacement host and hardcode it without
+confirming — that's exactly the "plausible guess that silently returns
+wrong data" failure mode `.claude/commands/pickup.md` explicitly warns
+against.
+
+---
+
 ## Open threads
 
-1. **ALDI store discovery is unverified.** `STORE_URL` is a guess; the adapter
-   falls back to a hardcoded service point (`479-022`) so the pipeline still
-   runs end to end. Probe the store selector on new.aldi.us for the real path.
-2. **All Publix endpoints unverified.** Run the probe, fix `PUBLIX_CONFIG`.
-3. **Confirm the right `serviceType` value** for shelf pricing. `"instore"` is
+1. **`api.aldi.us` doesn't resolve — find the real host (see D12).** This
+   now blocks everything else about ALDI; nothing below it can be
+   attempted meaningfully until this is fixed.
+2. **ALDI store discovery is unverified**, independent of D12. `STORE_URL`
+   is a guess; the adapter falls back to a hardcoded service point
+   (`479-022`) so the pipeline degrades gracefully rather than hard-
+   failing. Probe the store selector on new.aldi.us for the real path
+   once a working API host exists to probe.
+3. **All Publix endpoints unverified.** Run the probe, fix `PUBLIX_CONFIG`.
+4. **Confirm the right `serviceType` value** for shelf pricing. `"instore"` is
    a guess.
-4. **ALDI exposes no UPC.** ~90% private label, so there's often no UPC to
+5. **ALDI exposes no UPC.** ~90% private label, so there's often no UPC to
    match on at all. Cross-retailer joins need fuzzy name + size matching. This
    is the real work of the dbt layer, not an afterthought — and it's the next
-   piece to build.
+   piece to build, once ALDI can actually produce data at all.

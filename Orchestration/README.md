@@ -3,6 +3,21 @@
 Weekly scheduled ingestion for Kroger pricing + Aldi catalog, running as an
 ECS Fargate task triggered by EventBridge Scheduler. Built 2026-08-23.
 
+**Status**: infrastructure proven, Aldi leg not yet. Built and verified
+via a diagnostic `test_infra` run the same day (2026-08-23), then a real
+manual `friday_full` trigger the same day exercised the actual pipeline
+end to end. **Kroger's half worked cleanly** — checkpoint reset, 45/81
+stores swept, matches every prior run's behavior exactly. **Aldi's half
+failed** — its first-ever live attempt hit a DNS resolution error on
+`api.aldi.us` (`No address associated with hostname`) on both the store
+lookup and the catalog fetch, zero rows collected. Not yet re-tried or
+root-caused (transient network blip in that Fargate task vs. something
+persistent — genuinely unknown right now). Treat Aldi as still
+mocked-payloads-only, not "verified live," despite the attempt. A one-off
+`at()` schedule (`ActionAfterCompletion: DELETE`) picked up the Kroger
+continuation the next day outside the regular Friday/Saturday cadence —
+see "one-off triggers" below.
+
 ## Why this over Airflow / Fivetran / GitHub Actions
 
 - **Fivetran** doesn't fit — it's a managed ELT tool for known connectors,
@@ -32,7 +47,10 @@ stores in a single run**, full stop, regardless of what schedules it.
   pricing checkpoint (`--reset-checkpoint`, see
   `Kroger_Pricing_2026-08-10.py`) and runs Kroger + Aldi. Gets through
   ~45 of 81 Kroger stores before hitting the daily budget; Aldi (~6 min,
-  no checkpoint needed) always finishes in this run.
+  no checkpoint needed) has no daily-budget reason to not finish in one
+  run, but its first live attempt (2026-08-23) failed on a DNS error
+  before collecting anything — see the Status note above. Don't assume
+  Aldi's leg is reliable until that's actually re-verified.
 - **`grocery-ingest-saturday-continue`** — Saturday 9am ET. Runs Kroger
   again *without* resetting — the existing resumable checkpoint logic
   picks up the remaining ~36 stores automatically. This is the same
@@ -114,12 +132,12 @@ by hitting a real `AccessDenied`, not anticipated up front):
 3. `jdsmithwes` could `secretsmanager:ListSecrets` but not `CreateSecret`
    — one more inline policy, scoped to `grocery-ingest/*` only (not
    account-wide Secrets Manager access).
-4. `jdsmithwes` cannot `logs:GetLogEvents` — **known gap, not yet fixed**.
-   Task runs succeed and exit codes are readable via
-   `aws ecs describe-tasks`, but the actual log output (row counts,
-   warnings) isn't readable until `CloudWatchLogsReadOnlyAccess` (or
-   equivalent) is attached. Do this before the first real Friday run
-   finishes if you want to actually see what it did.
+4. `jdsmithwes` cannot `logs:GetLogEvents` — **fixed 2026-08-23** (same day,
+   `CloudWatchLogsReadOnlyAccess` attached). Confirmed working by reading
+   back the `test_infra` diagnostic run's actual log lines afterward.
+   `logs:PutRetentionPolicy` is still missing (see the resource table
+   below) — low-stakes, just means the log group never expires, unlike
+   fixing log *read* access which blocked actually operating this thing.
 
 **Lesson for next time a new AWS service gets wired into this project**:
 assume `jdsmithwes` has *no* access to it until proven otherwise — don't
@@ -133,6 +151,10 @@ service's permission was independently absent here.
   override setting `RUN_MODE` to `friday_full` or `saturday_kroger_continue`
   — see `friday-schedule.json`/`saturday-schedule.json` for the exact
   network configuration to reuse.
+- **Retry just Aldi without touching Kroger**: `RUN_MODE=aldi_only`, added
+  2026-08-23 specifically for this — re-running the whole `friday_full`
+  mode just to get back to the Aldi step would also reset and re-burn the
+  Kroger checkpoint for no reason.
 - **Verify the pipeline without spending API budget**: same, but
   `RUN_MODE=test_infra` — confirms secrets injection, AWS auth, and S3
   reachability without touching Kroger or Aldi. Safe to run anytime.
@@ -152,6 +174,17 @@ service's permission was independently absent here.
   in this folder are the exact specs used to create these resources —
   treat them as the source of truth if anything needs recreating, same
   convention as the `.sql` files under `Snowflake Scripts/`.
+- **One-off triggers outside the regular weekly cadence** (e.g. "I want
+  fresh data today, not Friday"): don't just `run-task` and hope you
+  remember to finish it manually — create a single-fire EventBridge
+  Schedule instead, same `Target` shape as the two recurring ones but
+  `"ScheduleExpression": "at(YYYY-MM-DDTHH:MM:SS)"` and
+  `"ActionAfterCompletion": "DELETE"` so it cleans itself up after firing
+  once. Proven 2026-08-23: triggered `friday_full` immediately, then
+  registered an `at()` schedule for the next morning with
+  `RUN_MODE=saturday_kroger_continue` to finish the Kroger sweep — no
+  recurring schedule had to be touched, and nothing needed remembering by
+  a human the next day.
 
 ## Resources this created (for teardown/reference)
 

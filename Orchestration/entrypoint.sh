@@ -25,6 +25,15 @@ case "${RUN_MODE:-}" in
     echo "=== Kroger pricing: continue from Friday's checkpoint (no reset) ==="
     python3 "API Scripts/Kroger Scripts/Product Pricing/Kroger_Pricing_2026-08-10.py"
     ;;
+  aldi_only)
+    # Retry/debug mode: re-runs just Aldi without touching the Kroger
+    # checkpoint. Added 2026-08-23 after Aldi's leg of a friday_full run
+    # failed on a DNS error post-Kroger — needed a way to retry Aldi alone
+    # rather than re-running (and re-resetting) Kroger just to get back to
+    # the Aldi step.
+    echo "=== Aldi: full catalog sweep (standalone retry) ==="
+    (cd "API Scripts/Aldi Publix Scripts" && python3 ingest.py --retailers aldi --zips 30080)
+    ;;
   test_infra)
     # Diagnostic mode: confirms secrets injection, AWS auth, and S3 network
     # egress all work, WITHOUT touching Kroger/Aldi or spending any API
@@ -41,7 +50,7 @@ print('S3 list OK, got', len(r.get('Contents', [])), 'object(s)')
 "
     ;;
   *)
-    echo "ERROR: RUN_MODE must be 'friday_full' or 'saturday_kroger_continue', got '${RUN_MODE:-<unset>}'" >&2
+    echo "ERROR: RUN_MODE must be one of 'friday_full', 'saturday_kroger_continue', 'aldi_only', 'test_infra' — got '${RUN_MODE:-<unset>}'" >&2
     exit 1
     ;;
 esac
