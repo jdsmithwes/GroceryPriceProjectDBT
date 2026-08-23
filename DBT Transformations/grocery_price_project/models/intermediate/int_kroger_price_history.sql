@@ -1,7 +1,15 @@
-{{ config(materialized='view') }}
+{{ config(materialized='table') }}
 
 -- SCD Type 2 price history, one row per contiguous span of unchanged
 -- PRICE_REGULAR/PRICE_PROMO for a given PRODUCT_ID + LOCATION_ID.
+--
+-- Materialized as a table (not view): this is the single most-queried
+-- object in the project (49 queries/7 days measured, ~1.85s and ~580MB
+-- scanned each, since as a view it re-ran the full window-function pass
+-- over the entire price history every time). Storage cost of the
+-- collapsed result is negligible next to that recurring compute. Rerun
+-- `dbt run` after each new pricing collection run to refresh it —
+-- IS_CURRENT/VALID_TO won't reflect new data until then.
 --
 -- The raw layer is already append-only (every ingestion run lands new
 -- rows in RAW.KROGER_PRICING/KROGER_INVENTORY rather than overwriting),

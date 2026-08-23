@@ -73,3 +73,50 @@ models:
         description: "COLLECTED_AT of the most recent observation still confirmed unpriced within this span."
       - name: IS_CURRENT
         description: "TRUE if this product+location is unpriced as of the most recent observation (VALID_TO IS NULL) — meaning it currently has no corresponding row in int_kroger_price_history. FALSE once pricing has resumed at least once."
+
+  - name: int_kroger_product_catalog_current
+    config:
+      materialized: view
+      group: kroger
+    description: >
+      Convenience "current state" view over stg_kroger_product_catalog:
+      one row per PRODUCT_ID, keeping only the most recent COLLECTED_AT.
+      stg_kroger_product_catalog is append-only across collection runs
+      (raw-landing convention) so PRODUCT_ID alone isn't unique there —
+      this model exists for callers who just want the catalog as it
+      stands right now, without dealing with collection-run duplicates.
+      The full history stays available upstream in
+      stg_kroger_product_catalog if ever needed.
+    columns:
+      - name: PRODUCT_ID
+        description: "Kroger product id. Unique here by construction (latest row per id) — unlike stg_kroger_product_catalog, where it is not."
+        data_tests:
+          - not_null
+          - unique
+      - name: COLLECTED_AT
+        description: "Timestamp of the most recent collection run that observed this product."
+        data_tests:
+          - not_null
+
+  - name: int_kroger_locations_current
+    config:
+      materialized: view
+      group: kroger
+    description: >
+      Convenience "current state" view over stg_json_kroger_locations:
+      one row per LOCATION_ID, keeping only the most recent COLLECTED_AT.
+      Same append-only situation as the catalog — every Kroger_Location_*.py
+      run lands new rows, so LOCATION_ID alone isn't unique upstream. Full
+      column set passed through unchanged (select *), just latest-row-wins
+      per store. History stays available upstream in
+      stg_json_kroger_locations if ever needed.
+    columns:
+      - name: LOCATION_ID
+        description: "Kroger location id. Unique here by construction (latest row per id) — unlike stg_json_kroger_locations, where it is not."
+        data_tests:
+          - not_null
+          - unique
+      - name: COLLECTED_AT
+        description: "Timestamp of the most recent collection run that observed this location."
+        data_tests:
+          - not_null

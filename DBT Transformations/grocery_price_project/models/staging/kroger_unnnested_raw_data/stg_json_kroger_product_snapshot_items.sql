@@ -1,4 +1,4 @@
-{{ config(materialized='view') }}
+{{ config(materialized='incremental') }}
 
 -- Fans out ITEMS (array of objects) — this is the field carrying the
 -- actual per-store price and inventory data these pipelines exist
@@ -8,10 +8,28 @@
 -- effectiveDate/expirationDate objects, are all flattened inline — no
 -- further arrays inside ITEMS, so this is a full, single-pass flatten.
 -- Keys verified against the live data.
+--
+-- Materialized as incremental (not table, not view): this does a LATERAL
+-- FLATTEN over the pricing+inventory history (1M+ rows and growing), and
+-- it's the direct base for int_kroger_price_history/int_kroger_unpriced_history,
+-- both queried repeatedly (by dbt and the Streamlit app). A plain table
+-- would re-flatten the ENTIRE history on every `dbt run`, growing more
+-- expensive forever; incremental only flattens rows newer than what's
+-- already loaded, since each source row is independent (no window
+-- functions here, unlike the two int_ models downstream — safe to just
+-- append). Default `append` strategy is correct: rows are never updated
+-- or deleted, only added. Run a full-refresh (`dbt run --full-refresh
+-- --select this`) if the underlying RAW tables were ever backfilled with
+-- rows dated earlier than what's already loaded (an incremental run
+-- would silently miss those, since it only looks forward from
+-- MAX(COLLECTED_AT)).
 
 with source as (
 
     select * from {{ ref('stg_json_kroger_product_snapshot') }}
+    {% if is_incremental() %}
+    where COLLECTED_AT > (select max(COLLECTED_AT) from {{ this }})
+    {% endif %}
 
 )
 
