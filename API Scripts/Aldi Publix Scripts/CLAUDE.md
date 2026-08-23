@@ -15,7 +15,7 @@ matching the root project's S3-as-source-of-truth convention (see D11).
 Normalizes in dbt (Snowflake) — not written yet, see root project's
 `DBT Transformations/grocery_price_project/`.
 
-**Active adapters:** ALDI (endpoint shape verified), Publix (unverified).
+**Active adapters:** ALDI (API host confirmed broken 2026-08-23, see D12 — not currently functional), Publix (unverified, never attempted live).
 **Deferred:** Lidl, Ingles (circular-only), Piggly Wiggly (franchise co-op).
 
 @README.md
@@ -23,17 +23,38 @@ Normalizes in dbt (Snowflake) — not written yet, see root project's
 
 ## Current state — read before proposing work
 
-**Nothing has run against a live endpoint.** Everything is verified against
-mocked payloads plus one open-source ALDI reference. Tested-and-green here does
-not mean confirmed-against-production. The next real step is always: probe
-first, then trust.
+**`api.aldi.us` — every URL in `AldiAdapter` (`CATALOG_URL`, `STORE_URL`,
+`PRODUCT_URL`) — does not resolve. Confirmed 2026-08-23, root-caused, not
+a network/Fargate issue.** Two live attempts against it both failed
+identically with `httpx.ConnectError: [Errno -5] No address associated
+with hostname`. Verified independently via `dig`/`curl` from a completely
+different network (not the Fargate task) — the domain simply has no DNS
+record right now, from anywhere. For comparison, `new.aldi.us` (the real
+customer-facing site, already referenced in `EXTRA_HEADERS`' `origin`/
+`referer`) resolves fine and is Akamai-fronted. The open-source reference
+this adapter's endpoint shape was built from (`github.com/stiles/aldi`,
+per `DECISIONS.md` D4) has almost certainly drifted — Aldi likely moved
+their API to a different host since that reference was written. **ALDI is
+not merely "unverified" anymore — it's confirmed broken as currently
+coded.** Fixing it means finding the real current API host (likely by
+inspecting network requests on `new.aldi.us` in a browser) and updating
+`CATALOG_URL`/`STORE_URL`/`PRODUCT_URL` accordingly — not a retry, not an
+infrastructure fix. **Publix** has never touched a live endpoint at all —
+the "probe first, then trust" rule fully applies there, and it stays
+excluded from the scheduled pipeline until it does.
 
 Blocking unknowns, in order:
 
-1. ALDI `STORE_URL` is a guess — adapter falls back to hardcoded service point
-   `479-022` so the pipeline runs end to end.
-2. Every value in `PUBLIX_CONFIG` is a hypothesis.
-3. The `serviceType` value that returns shelf pricing is unconfirmed
+1. **`api.aldi.us` needs to be replaced with Aldi's real current API
+   host** (see above) — this now blocks everything else about ALDI, not
+   just store discovery.
+2. ALDI `STORE_URL` is a guess on top of the above — even once the host is
+   fixed, the store-selector endpoint itself is still unconfirmed; the
+   hardcoded `479-022` fallback exists so the pipeline degrades gracefully
+   rather than hard-failing, but it was never meant to be the permanent
+   answer.
+3. Every value in `PUBLIX_CONFIG` is a hypothesis.
+4. The `serviceType` value that returns shelf pricing is unconfirmed
    (`"instore"` is a guess).
 
 ## Invariants — do not break these
@@ -57,9 +78,12 @@ one maps to a decision record; read it before changing the behavior.
 
 - **Python 3.10+** required (`dataclass(slots=True)`). `httpx` async,
   stdlib elsewhere. No scraping frameworks.
-- ALDI's paths are hardcoded because verified; Publix's live in
-  `PUBLIX_CONFIG` because they are not. Do not "clean this up" into one style —
-  the asymmetry is the point (D4).
+- ALDI's paths are hardcoded (Publix's live in `PUBLIX_CONFIG` instead) — but
+  don't read "hardcoded" as "verified" anymore, see D12: the hardcoded host
+  itself is confirmed wrong. Do not "clean this up" into one style once it's
+  fixed — the asymmetry (hardcoded vs. config-driven) was always about how
+  much confidence exists per source, not about which one currently works
+  (D4).
 - New retailer = new `RetailerAdapter` subclass in `adapters.py`, declaring
   its `tier` and its `PriceSurface`.
 
