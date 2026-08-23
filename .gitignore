@@ -13,6 +13,7 @@ WM_IO_*
 __pycache__/
 *.pyc
 *.pyo
+.venv/
 
 # Generated data output (regenerable from scripts)
 data/
