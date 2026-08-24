@@ -2,7 +2,9 @@
 
 ## Project Overview
 
-**Goal**: Build a data pipeline to collect grocery pricing data from Kroger and Walmart, store it in Snowflake, transform it with dbt, and forecast when items will go on sale using AI.
+**Goal**: Build a data pipeline to collect grocery pricing data from Kroger, Walmart, and Publix, store it in Snowflake, transform it with dbt, and forecast when items will go on sale using AI.
+
+Publix has no public pricing API, so its data is acquired via a paid Apify scraper actor rather than a direct vendor integration (see `scripts/ingest_publix_prices.py`). Output is normalized to a common schema (`source`, `product_id`, `upc`, `name`, `brand`, `regular_price`, `promo_price`, `unit_price`, `in_stock`, `store_id`, `category`, `collected_at`) so it can be unioned with Kroger data downstream in dbt.
 
 **Owner**: Jamaal Smith (jdsmith1906@gmail.com)
 
@@ -11,6 +13,7 @@
 ## Tech Stack
 
 - **APIs**: Kroger Products API, Walmart Affiliate Marketing API
+- **Publix data**: Apify scraper actor (no official Publix API exists) — see `APIFY_API_TOKEN` / `APIFY_PUBLIX_ACTOR_ID` in `.env.example`
 - **Data Warehouse**: Snowflake
 - **Transformation**: dbt (data build tool)
 - **Analysis**: Python + AI for forecasting
