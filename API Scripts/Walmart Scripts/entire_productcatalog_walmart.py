@@ -28,24 +28,39 @@ are added. In the meantime, GROCERY_KEYWORDS filters items client-side by
 matching against the real "categoryPath" field (e.g.
 "Food/Snacks/Chips"), confirmed from Walmart's sample response.
 
-Live-tested 2026-08-11 with WALMART_CONSUMER_ID set to the Stage consumer
-ID (a9d00627-32ca-4016-acc5-4dbe58ea5009): a single-request smoke test
-against the real endpoint returned a well-formed 401 — signing, headers,
-and request format are all correct (Walmart's server parsed and rejected
-it cleanly, not a malformed-request error):
+Live-verified working 2026-08-31. WALMARTIO-6695 (the portal's "Upload
+Public Key" flow silently failing) is now resolved for a Production
+Consumer ID: app "GroceryProjectDBTSecond", Consumer ID
+adf198f2-f406-4a5e-93b5-31dc13468971, key version 2. A single-request
+smoke test against the real endpoint returned 200 with real catalog data.
 
-    {"details":{"Description":"Public Key not found for  Consumer id :
-    a9d00627-...","wm_svc.env":"prod"}}
+Getting here took several rounds of elimination — worth recording so the
+next auth issue doesn't repeat the same dead ends:
+  - The signing implementation itself (string-to-sign field order/format,
+    SHA256withRSA, PKCS1v15 padding, base64 encoding) was independently
+    verified correct against Walmart's own documentation before any of
+    this — it was never the bug.
+  - Three separate, internally-valid, mutually-distinct RSA key pairs
+    were tried across two different Prod Consumer IDs and all failed
+    identically with "Signature verification failed" — i.e. Walmart
+    recognized the consumer ID but the uploaded public key didn't match
+    whatever key material was actually registered server-side.
+  - The fix was uploading a fresh key pair and confirming the portal's
+    displayed key version actually incremented (1 -> 2) as proof the
+    upload took effect, rather than trusting the upload dialog's silent
+    "success" (it shows no confirmation either way — this app's portal
+    still has the WALMARTIO-6695-era UX, it just no longer silently
+    fails to persist the key).
+  - Even after a confirmed version bump, the very next call still 401'd
+    with "Public Key not found for Consumer id" (a *different* error
+    than the signature-mismatch one) — this was the portal's key-upload
+    endpoint and the downstream auth-verification service being out of
+    sync. It resolved on its own within a few minutes; no code or config
+    change fixed it, just waiting.
 
-The "wm_svc.env":"prod" in that response confirms the Affiliate API has
-no separate Stage host to test against — developer.api.walmart.com IS
-the only environment, and it only recognizes public keys uploaded via
-the portal's Production "Upload Public Key" flow. That flow is the exact
-one silently failing (see WALMARTIO-6695 in .claude/instructions.md), so
-this 401 is the *same* blocker surfacing through the API instead of the
-portal UI, not a new problem — a Stage-only consumer ID can't work
-around it. Full crawl not attempted; every call would fail identically
-until Prod access is granted.
+KEY_VERSION defaults to "1" but is overridable via the WALMART_KEY_VERSION
+env var (see .env) — needed because re-uploading a key to an existing
+Consumer ID increments its version rather than replacing version 1.
 """
 
 import base64
@@ -75,7 +90,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 API_HOST = "https://developer.api.walmart.com"
 CATALOG_PATH = "/api-proxy/service/affil/product/v2/paginated/items"
-KEY_VERSION = "1"
+KEY_VERSION = os.environ.get("WALMART_KEY_VERSION", "1")
 
 PAGE_SIZE = 200            # "count" param; max not confirmed, lower this if the API errors
 MAX_PAGES_PER_FILTER = 500  # safety valve against a runaway/looping walk, not an expected ceiling
@@ -87,18 +102,22 @@ MAX_REQUESTS_PER_SECOND = 8
 S3_BUCKET = "grocerydbtprojectrawdata"
 S3_PREFIX = "walmart/"
 
-# One walk per filter, run concurrently. TODO: once real Food/Grocery
-# category ids are pulled from Walmart's Taxonomy API, replace the single
-# unfiltered entry below with one entry per category id, e.g.
-# [{"category": "976759"}, {"category": "976760"}] — each runs as its own
-# concurrent, fully-paginated walk instead of relying on client-side
-# keyword filtering.
-CATALOG_FILTERS: list[dict] = [{}]
+# One walk per filter, run concurrently, server-side scoped to Walmart's
+# real "Food" department (id 976759) via walmart_taxonomy.py, confirmed
+# 2026-08-31 against the live taxonomy endpoint — not a guess. Its direct
+# children are real grocery sub-categories (Snacks/Cookies & Chips, Dairy &
+# Eggs, Frozen Foods, Meat & Seafood, Bakery & Bread, Fresh Produce,
+# Beverages, Pantry, Candy, etc.) — see the "Direct children of Food"
+# section of that script's output for the full list if finer-grained
+# per-subcategory filters are ever needed instead of the whole department.
+CATALOG_FILTERS: list[dict] = [{"category": "976759"}]
 
-# Client-side safety net: keep only items whose categoryPath matches one of
-# these, since server-side category scoping isn't wired up yet (see
-# CATALOG_FILTERS above). categoryPath is a real field confirmed from
-# Walmart's documented sample response, e.g. "Food/Snacks/Chips".
+# Belt-and-suspenders safety net on top of server-side scoping above, in
+# case Food's own subtree still contains stray non-grocery listings (e.g.
+# "Food Journals" under Office Supplies would never reach here since it's
+# outside 976759's subtree, but check anyway rather than assume).
+# categoryPath is a real field confirmed from Walmart's documented sample
+# response, e.g. "Food/Snacks/Chips".
 GROCERY_KEYWORDS = [
     "food", "grocery", "grocer", "snack", "beverage", "drink", "pantry",
     "dairy", "produce", "meat", "seafood", "bakery", "frozen", "candy",
@@ -219,11 +238,13 @@ def fetch_page(auth: WalmartAuth, rate_limiter: RateLimiter, url: str) -> dict:
 
 
 def is_grocery_item(item: dict) -> bool:
-    haystack = " ".join(
-        str(item.get(field, ""))
-        for field in ("categoryPath", "name", "longDescription")
-    ).lower()
-    return any(keyword in haystack for keyword in GROCERY_KEYWORDS)
+    # categoryPath only, not name/longDescription: free-text fields false-
+    # positive on incidental mentions (a cooler's description says it keeps
+    # "food and drinks cold", a headlamp's says its bulb "produces" light —
+    # neither is a grocery item). categoryPath is Walmart's own taxonomy
+    # and doesn't have this problem.
+    category_path = str(item.get("categoryPath", "")).lower()
+    return any(keyword in category_path for keyword in GROCERY_KEYWORDS)
 
 
 def flatten_product(item: dict) -> dict:
