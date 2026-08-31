@@ -8,7 +8,7 @@
 flowchart TD
     subgraph EXT["External APIs"]
         KAPI["Kroger API<br/>Products + Locations"]
-        WAPI["Walmart Affiliate API<br/>(blocked — no Prod access yet)"]
+        WAPI["Walmart Affiliate API<br/>(auth working since 2026-08-31,<br/>no full pull run yet)"]
     end
 
     subgraph ING["Ingestion Layer — Python, concurrent + rate-limited"]
@@ -21,7 +21,7 @@ flowchart TD
 
     subgraph S3["S3 Landing Zone — grocerydbtprojectrawdata"]
         S3K[("kroger/ prefix<br/>4 filename patterns")]
-        S3W[("walmart/ prefix<br/>(empty, blocked)")]
+        S3W[("walmart/ prefix<br/>(test data only, no full pull yet)")]
     end
 
     EVTNOTE["S3 Event Notification<br/>(ObjectCreated, kroger/ prefix)"]
@@ -82,7 +82,7 @@ flowchart TD
 
 ## How It Works
 
-**Ingestion.** Four Python scripts pull from Kroger's Products and Locations APIs: one for the full product catalog (crawled by search term, since Kroger exposes no bulk "list everything" endpoint), one for store locations (searched by region — e.g. Metro Atlanta by ZIP + radius), and two for per-store pricing and inventory (batched by known product ID, 50 IDs/call, against a target list of store `locationId`s). All four use the same pattern: a thread pool for concurrent requests, a shared rate limiter, and a daily call-budget guard, since Kroger caps usage at 10,000 calls/day. A parallel Walmart catalog script exists but is currently blocked — the Walmart developer account only has a Stage API credential, and provisioning a Production one is stuck on a portal bug.
+**Ingestion.** Four Python scripts pull from Kroger's Products and Locations APIs: one for the full product catalog (crawled by search term, since Kroger exposes no bulk "list everything" endpoint), one for store locations (searched by region — e.g. Metro Atlanta by ZIP + radius), and two for per-store pricing and inventory (batched by known product ID, 50 IDs/call, against a target list of store `locationId`s). All four use the same pattern: a thread pool for concurrent requests, a shared rate limiter, and a daily call-budget guard, since Kroger caps usage at 10,000 calls/day. A parallel Walmart catalog script (`entire_productcatalog_walmart.py`) exists and, as of 2026-08-31, has working Prod auth and is verified end-to-end against a real Food-department-scoped pull — see `.claude/instructions.md`'s Walmart section for the full resolution story. No full production pull has been run yet, and no Snowflake landing table/pipe exists for Walmart.
 
 **Landing zone.** Every script uploads its output as a timestamped CSV directly to S3 (`grocerydbtprojectrawdata`), under a `kroger/` or `walmart/` prefix. Deliberately, the ingestion scripts apply minimal transformation: the catalog script flattens Kroger's product JSON into named columns (its shape is wide and relatively stable), but the location, pricing, and inventory scripts do the opposite — they extract only the join keys needed downstream (`productId`, `locationId`, `region`, `collected_at`) and preserve the rest of each API response untouched as a JSON string in a `raw_data` column. This is a deliberate ELT choice: parsing, joining, and business logic belong in dbt, not in the ingestion layer, so the raw layer stays a faithful, replayable copy of what the API actually returned.
 
@@ -90,7 +90,7 @@ flowchart TD
 
 **Snowflake object layout.** Everything AWS-facing — the storage integration, the shared stage, file formats, and the four pipes — lives in the `AWS_RESOURCES` schema. The landing tables themselves live in `RAW`. Access from Snowflake to S3 goes through an IAM role (`GroceryPriceProjectSnowflakeRole`) whose trust policy is scoped to Snowflake's specific IAM user and an external ID, both generated when the storage integration is created — a two-way handshake configured once and left alone, since recreating the integration invalidates it.
 
-**What's not built yet.** This section predates the Aldi/Publix integration and the Orchestration pipeline (both 2026-08-23) — see `.claude/instructions.md` and `Orchestration/README.md` for current state; not rewritten fully here yet. As of 2026-08-23, Kroger and Aldi run on a real weekly schedule (EventBridge Scheduler + Fargate, see `Orchestration/README.md`) — collection is no longer purely manual for those two sources, though `dbt run` after each collection still is. dbt's Kroger staging layer (below) is fully built, plus an intermediate layer collapsing it into actual price history — but marts, the layer that joins catalog/pricing/inventory/location together and applies business logic, still doesn't exist. Walmart's entire pipeline is blocked upstream at the API-access stage, so `walmart/` remains empty and its Snowpipe has nothing to load. The forecasting model itself (Phase 5) is not yet designed — it depends on enough historical pricing snapshots accumulating in `KROGER_PRICING`, which the new schedule is now actually building toward instead of relying on ad hoc runs.
+**What's not built yet.** This section predates the Aldi/Publix integration and the Orchestration pipeline (both 2026-08-23) — see `.claude/instructions.md` and `Orchestration/README.md` for current state; not rewritten fully here yet. As of 2026-08-23, Kroger and Aldi run on a real weekly schedule (EventBridge Scheduler + Fargate, see `Orchestration/README.md`) — collection is no longer purely manual for those two sources, though `dbt run` after each collection still is. dbt's Kroger staging layer (below) is fully built, plus an intermediate layer collapsing it into actual price history — but marts, the layer that joins catalog/pricing/inventory/location together and applies business logic, still doesn't exist. Walmart's ingestion script itself works as of 2026-08-31 (see `.claude/instructions.md`), but no full production pull has been run and no Snowflake landing table/pipe exists yet, so nothing is actually flowing into Snowflake from Walmart. The forecasting model itself (Phase 5) is not yet designed — it depends on enough historical pricing snapshots accumulating in `KROGER_PRICING`, which the new schedule is now actually building toward instead of relying on ad hoc runs.
 
 **Why this shape.** The core bet is that an event-driven, source-per-table landing pattern scales cleanly as more data types and retailers are added — each new source is a new script, a new pipe with its own `PATTERN`, and a new `RAW` table, without touching what already works. Keeping the landing layer close to raw (rather than pre-joining or reshaping in Python) means schema decisions and business logic live in one place — dbt — instead of being split across ingestion code and transformation code where they're easy to lose track of.
 
