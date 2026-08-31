@@ -17,8 +17,11 @@ USE WAREHOUSE COMPUTE_WH;
 CREATE DATABASE IF NOT EXISTS GROCERYDBTPROJECT;
 USE DATABASE GROCERYDBTPROJECT;
 
--- [RUN ONCE]
-CREATE SCHEMA IF NOT EXISTS GROCERYDBTPROJECT.RAW;
+-- [RUN ONCE] NOTE: the raw schema is GROCERY_RAW, not RAW — renamed at some
+-- point after 2026-08-11 (see .claude/instructions.md's Snowflake section).
+-- This line is kept only as a historical record of what originally ran;
+-- don't create a literal RAW schema from this.
+CREATE SCHEMA IF NOT EXISTS GROCERYDBTPROJECT.GROCERY_RAW;
 CREATE SCHEMA IF NOT EXISTS GROCERYDBTPROJECT.AWS_RESOURCES;
 
 
@@ -103,7 +106,7 @@ FROM TABLE(
 -- Re-running this with OR REPLACE wipes the table's data AND drops the
 -- manually-added INGESTED_FILENAME column (step 3b must be re-run
 -- immediately after if you ever do this again).
-CREATE OR REPLACE TABLE GROCERYDBTPROJECT.RAW.KROGER_PRODUCT_CATALOG
+CREATE OR REPLACE TABLE GROCERYDBTPROJECT.GROCERY_RAW.KROGER_PRODUCT_CATALOG
   USING TEMPLATE (
     SELECT ARRAY_AGG(OBJECT_CONSTRUCT(*))
     FROM TABLE(
@@ -115,7 +118,7 @@ CREATE OR REPLACE TABLE GROCERYDBTPROJECT.RAW.KROGER_PRODUCT_CATALOG
   );
 
 -- 3b. [RUN ONCE] Add a column to hold which source file each row came from.
-ALTER TABLE GROCERYDBTPROJECT.RAW.KROGER_PRODUCT_CATALOG
+ALTER TABLE GROCERYDBTPROJECT.GROCERY_RAW.KROGER_PRODUCT_CATALOG
   ADD COLUMN IF NOT EXISTS INGESTED_FILENAME STRING;
 
 -- 4. [RUN ONCE — then AUTOMATIC] Snowpipe: auto-loads any new file that
@@ -136,7 +139,7 @@ ALTER TABLE GROCERYDBTPROJECT.RAW.KROGER_PRODUCT_CATALOG
 CREATE OR REPLACE PIPE GROCERYDBTPROJECT.AWS_RESOURCES.KROGER_PRODUCT_CATALOG_PIPE
   AUTO_INGEST = TRUE
 AS
-  COPY INTO GROCERYDBTPROJECT.RAW.KROGER_PRODUCT_CATALOG
+  COPY INTO GROCERYDBTPROJECT.GROCERY_RAW.KROGER_PRODUCT_CATALOG
   FROM @GROCERYDBTPROJECT.AWS_RESOURCES.MY_S3_STAGE_KROGER
   PATTERN = '.*kroger_product_catalog_.*[.]csv'
   FILE_FORMAT = (FORMAT_NAME = GROCERYDBTPROJECT.AWS_RESOURCES.MY_CSV_INFER)
@@ -155,7 +158,7 @@ AS
 -- "already loaded" tracking survives table recreation).
 -- FORCE = TRUE bypasses that tracking and reloads regardless. Re-run this
 -- any time you need to force a reload; it is NOT run automatically.
-COPY INTO GROCERYDBTPROJECT.RAW.KROGER_PRODUCT_CATALOG
+COPY INTO GROCERYDBTPROJECT.GROCERY_RAW.KROGER_PRODUCT_CATALOG
   FROM @GROCERYDBTPROJECT.AWS_RESOURCES.MY_S3_STAGE_KROGER
   PATTERN = '.*kroger_product_catalog_.*[.]csv'
   FILE_FORMAT = (FORMAT_NAME = GROCERYDBTPROJECT.AWS_RESOURCES.MY_CSV_INFER)
@@ -192,69 +195,138 @@ SHOW PIPES LIKE 'KROGER_PRODUCT_CATALOG_PIPE' IN SCHEMA GROCERYDBTPROJECT.AWS_RE
 -- rule applies once the pipe + S3 Event Notification are wired up.
 -- Reuses the existing MY_CSV_INFER file format and GROCERY_PRICE_PROJECT
 -- storage integration (STORAGE_ALLOWED_LOCATIONS already includes the
--- walmart/ prefix) — only a new stage, table, and pipe are needed.
+-- walmart/ prefix). The stage (step 1) was already created 2026-08-10,
+-- before Walmart auth was even working — only the table and pipe were
+-- actually new work as of 2026-08-31.
 --
--- NOTE: as of this writing, s3://grocerydbtprojectrawdata/walmart/ has no
--- catalog file in it yet (Walmart script still blocked on Prod API
--- access). The INFER_SCHEMA / CREATE TABLE steps below need at least one
--- real file present to succeed — everything through the stage creation
--- can run now; those two will error with "Object does not exist" or an
--- empty result until a file lands there.
+-- Auth resolved 2026-08-31 (see .claude/instructions.md's Walmart
+-- section and entire_productcatalog_walmart.py's docstring). At that
+-- point walmart/ held two file shapes that are NOT the product catalog:
+-- a small TEST_walmart_grocery_catalog_*.csv (used below only to bootstrap
+-- INFER_SCHEMA, since its columns match flatten_product()'s real output)
+-- and walmart_taxonomy_*.csv (a completely different shape — id/name/path/
+-- depth/parent_id from walmart_taxonomy.py, a one-off reference pull, not
+-- part of the ongoing catalog inflow). The pipe's PATTERN below is
+-- anchored specifically so it never loads either of those into the
+-- product catalog table — same lesson as Kroger's PATTERN comment above:
+-- once a stage might ever hold more than one file shape, don't rely on
+-- MATCH_BY_COLUMN_NAME alone to sort it out.
 -- =====================================================================
 
--- 1. [RUN ONCE] External stage pointing at the walmart/ prefix
+-- 1. [RUN ONCE — already done 2026-08-10] External stage pointing at the
+-- walmart/ prefix. Kept here for reference/idempotency, not new work.
 CREATE OR REPLACE STAGE GROCERYDBTPROJECT.AWS_RESOURCES.MY_S3_STAGE_WALMART
   STORAGE_INTEGRATION = GROCERY_PRICE_PROJECT
   URL = 's3://grocerydbtprojectrawdata/walmart/'
   FILE_FORMAT = GROCERYDBTPROJECT.AWS_RESOURCES.MY_CSV_INFER;
 
--- 2. [INFORMATIONAL] Preview the inferred schema (requires a real file in walmart/ first)
+-- 2. [INFORMATIONAL] Preview the inferred schema. Scoped to the TEST
+-- bootstrap file specifically via FILES => (...) — without this,
+-- INFER_SCHEMA would also see walmart_taxonomy_*.csv sitting in the same
+-- prefix and either error or produce a garbled merged schema. Useful to
+-- eyeball, but NOT used to drive step 3 below — see that step's comment
+-- for why.
 SELECT *
 FROM TABLE(
   INFER_SCHEMA(
     LOCATION => '@GROCERYDBTPROJECT.AWS_RESOURCES.MY_S3_STAGE_WALMART',
-    FILE_FORMAT => 'GROCERYDBTPROJECT.AWS_RESOURCES.MY_CSV_INFER'
+    FILE_FORMAT => 'GROCERYDBTPROJECT.AWS_RESOURCES.MY_CSV_INFER',
+    FILES => ('TEST_walmart_grocery_catalog_2026-08-31T220212Z.csv')
   )
 );
 
--- 3. [RUN ONCE] Create the table using the inferred schema.
--- Same caveat as Kroger: OR REPLACE wipes data and drops INGESTED_FILENAME.
-CREATE OR REPLACE TABLE GROCERYDBTPROJECT.RAW.WALMART_PRODUCT_CATALOG
-  USING TEMPLATE (
-    SELECT ARRAY_AGG(OBJECT_CONSTRUCT(*))
-    FROM TABLE(
-      INFER_SCHEMA(
-        LOCATION => '@GROCERYDBTPROJECT.AWS_RESOURCES.MY_S3_STAGE_WALMART',
-        FILE_FORMAT => 'GROCERYDBTPROJECT.AWS_RESOURCES.MY_CSV_INFER'
-      )
-    )
-  );
+-- 3. [RUN ONCE] Create the table with an EXPLICIT schema — deliberately
+-- NOT USING TEMPLATE (...INFER_SCHEMA...) like Kroger's step 3 above.
+-- Tried that first (2026-08-31) and it produced dangerously narrow types
+-- from the tiny 5-row TEST sample: itemId NUMBER(4,0) (real itemIds run to
+-- 6+ digits — would overflow), upc NUMBER(12,0) (strips leading zeros,
+-- the exact documented Kroger UPC lesson — see instructions.md), msrp/
+-- salePrice NUMBER(4,2) (caps at $99.99). Matches Kroger's actual live
+-- table instead (confirmed via DESCRIBE TABLE, 2026-08-31): every column
+-- VARCHAR except the timestamp — sidesteps type-inference risk entirely,
+-- real numeric/boolean casting happens in dbt, not here. Column list
+-- matches flatten_product()'s output in entire_productcatalog_walmart.py.
+CREATE OR REPLACE TABLE GROCERYDBTPROJECT.GROCERY_RAW.WALMART_PRODUCT_CATALOG (
+  itemId VARCHAR,
+  parentItemId VARCHAR,
+  upc VARCHAR,
+  name VARCHAR,
+  brandName VARCHAR,
+  categoryPath VARCHAR,
+  categoryNode VARCHAR,
+  msrp VARCHAR,
+  salePrice VARCHAR,
+  longDescription VARCHAR,
+  stock VARCHAR,
+  marketplace VARCHAR,
+  sellerInfo VARCHAR,
+  customerRating VARCHAR,
+  numReviews VARCHAR,
+  clearance VARCHAR,
+  mediumImage VARCHAR,
+  productTrackingUrl VARCHAR,
+  collected_at TIMESTAMP_NTZ(9)
+);
 
 -- 3b. [RUN ONCE] Add a column to hold which source file each row came from.
-ALTER TABLE GROCERYDBTPROJECT.RAW.WALMART_PRODUCT_CATALOG
+ALTER TABLE GROCERYDBTPROJECT.GROCERY_RAW.WALMART_PRODUCT_CATALOG
   ADD COLUMN IF NOT EXISTS INGESTED_FILENAME STRING;
 
--- 4. [RUN ONCE — then AUTOMATIC] Snowpipe: auto-loads any new file that
--- lands under walmart/ into RAW.WALMART_PRODUCT_CATALOG. Same as Kroger's
--- pipe — once this and its S3 Event Notification exist, no further manual
--- steps are needed for new files.
+-- 4. [RUN ONCE — then AUTOMATIC] Snowpipe: auto-loads any new file
+-- matching PATTERN under walmart/ into GROCERY_RAW.WALMART_PRODUCT_CATALOG.
+-- PATTERN is anchored (starts right after the stage's own walmart/ prefix,
+-- no leading .*) specifically to exclude TEST_-prefixed and
+-- walmart_taxonomy_*.csv files sitting in the same prefix — see the
+-- section header above.
 CREATE OR REPLACE PIPE GROCERYDBTPROJECT.AWS_RESOURCES.WALMART_PRODUCT_CATALOG_PIPE
   AUTO_INGEST = TRUE
 AS
-  COPY INTO GROCERYDBTPROJECT.RAW.WALMART_PRODUCT_CATALOG
+  COPY INTO GROCERYDBTPROJECT.GROCERY_RAW.WALMART_PRODUCT_CATALOG
   FROM @GROCERYDBTPROJECT.AWS_RESOURCES.MY_S3_STAGE_WALMART
+  PATTERN = 'walmart_grocery_catalog_.*[.]csv'
   FILE_FORMAT = (FORMAT_NAME = GROCERYDBTPROJECT.AWS_RESOURCES.MY_CSV_INFER)
   MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE
   INCLUDE_METADATA = (INGESTED_FILENAME = METADATA$FILENAME);
+-- NOTE: PATTERN here is relative to the STAGE's own URL (already scoped to
+-- .../walmart/), unlike Kroger's PATTERN above which is relative to a
+-- stage covering multiple source prefixes — don't copy Kroger's leading
+-- .* onto this one, it isn't needed and would defeat the anchoring.
+
+-- 4b. [ONE-TIME / ON-DEMAND — NOT part of the automatic path] Manual
+-- backfill, same purpose as Kroger's 4b above.
+COPY INTO GROCERYDBTPROJECT.GROCERY_RAW.WALMART_PRODUCT_CATALOG
+  FROM @GROCERYDBTPROJECT.AWS_RESOURCES.MY_S3_STAGE_WALMART
+  PATTERN = 'walmart_grocery_catalog_.*[.]csv'
+  FILE_FORMAT = (FORMAT_NAME = GROCERYDBTPROJECT.AWS_RESOURCES.MY_CSV_INFER)
+  MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE
+  INCLUDE_METADATA = (INGESTED_FILENAME = METADATA$FILENAME)
+  FORCE = TRUE;
 
 -- 5. [INFORMATIONAL — only needed once, to wire up AWS]
 SHOW PIPES LIKE 'WALMART_PRODUCT_CATALOG_PIPE' IN SCHEMA GROCERYDBTPROJECT.AWS_RESOURCES;
--- ^ The notification channel appears to be tied to the STAGE, not the
--- pipe (confirmed 2026-08-10: all four Kroger pipes, which share one
--- stage, share one queue). This pipe reads from a DIFFERENT stage
--- (MY_S3_STAGE_WALMART), so it likely gets its own distinct queue —
--- unverified since Walmart data is still blocked upstream (see Walmart
--- API section in .claude/instructions.md). When Walmart is unblocked,
--- confirm via this SHOW PIPES output, then add a SEPARATE S3 Event
--- Notification on the bucket for the walmart/ prefix pointed at whatever
--- ARN comes back — don't assume it's the same as Kroger's shared queue.
+-- ^ CONFIRMED 2026-08-31: notification_channel matched the same shared
+-- queue ARN as Kroger/Aldi/Publix, exactly as predicted (all four stages
+-- share the GROCERY_PRICE_PROJECT storage integration, and the channel is
+-- bound to the integration, not the stage). A new S3 Event Notification
+-- entry ("WalmartCatalogSnowpipeNotification", prefix "walmart/", suffix
+-- ".csv") was added to the bucket's existing notification config the same
+-- day, merged alongside the Kroger/Aldi/Publix entries — done via
+-- `aws s3api put-bucket-notification-configuration` with the full merged
+-- config (that API replaces the whole config, so always GET first and
+-- merge, never PUT a partial one).
+--
+-- FULLY VERIFIED END-TO-END, 2026-08-31: stage, table (explicit VARCHAR
+-- schema, see step 3), pipe, PATTERN, S3 Event Notification, and
+-- AUTO_INGEST were all proven working with real (small, synthetic-upload)
+-- test data. Two early fresh-upload tests over a combined ~25 minutes
+-- showed no auto-trigger (a manual `ALTER PIPE ... REFRESH` was used to
+-- confirm the pipe/table/pattern themselves were correct in the
+-- meantime — same recovery technique as the historical Kroger
+-- STOPPED_MISSING_TABLE incident) — this turned out to be one-time AWS
+-- propagation delay after the bucket's notification config changed for
+-- the first time in a while, not a real misconfiguration: a third test
+-- auto-ingested in ~17 seconds (upload to row landing), matching
+-- Kroger/Aldi/Publix's normal latency exactly. No special handling
+-- needed going forward — this behaves like every other source now.
+-- (All verification rows were TRUNCATEd afterward; the table was empty
+-- again before any real production data was expected.)
