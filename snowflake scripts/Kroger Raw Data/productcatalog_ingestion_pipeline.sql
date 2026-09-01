@@ -305,15 +305,15 @@ COPY INTO GROCERYDBTPROJECT.GROCERY_RAW.WALMART_PRODUCT_CATALOG
 -- 5. [INFORMATIONAL — only needed once, to wire up AWS]
 SHOW PIPES LIKE 'WALMART_PRODUCT_CATALOG_PIPE' IN SCHEMA GROCERYDBTPROJECT.AWS_RESOURCES;
 -- ^ CONFIRMED 2026-08-31: notification_channel matched the same shared
--- queue ARN as Kroger/Aldi/Publix, exactly as predicted (all four stages
--- share the GROCERY_PRICE_PROJECT storage integration, and the channel is
--- bound to the integration, not the stage). A new S3 Event Notification
--- entry ("WalmartCatalogSnowpipeNotification", prefix "walmart/", suffix
--- ".csv") was added to the bucket's existing notification config the same
--- day, merged alongside the Kroger/Aldi/Publix entries — done via
--- `aws s3api put-bucket-notification-configuration` with the full merged
--- config (that API replaces the whole config, so always GET first and
--- merge, never PUT a partial one).
+-- queue ARN as Kroger's own four pipes, exactly as predicted (both
+-- sources' stages share the GROCERY_PRICE_PROJECT storage integration,
+-- and the channel is bound to the integration, not the stage). A new S3
+-- Event Notification entry ("WalmartCatalogSnowpipeNotification", prefix
+-- "walmart/", suffix ".csv") was added to the bucket's existing
+-- notification config the same day, merged alongside Kroger's existing
+-- entry — done via `aws s3api put-bucket-notification-configuration`
+-- with the full merged config (that API replaces the whole config, so
+-- always GET first and merge, never PUT a partial one).
 --
 -- FULLY VERIFIED END-TO-END, 2026-08-31: stage, table (explicit VARCHAR
 -- schema, see step 3), pipe, PATTERN, S3 Event Notification, and
@@ -326,7 +326,7 @@ SHOW PIPES LIKE 'WALMART_PRODUCT_CATALOG_PIPE' IN SCHEMA GROCERYDBTPROJECT.AWS_R
 -- propagation delay after the bucket's notification config changed for
 -- the first time in a while, not a real misconfiguration: a third test
 -- auto-ingested in ~17 seconds (upload to row landing), matching
--- Kroger/Aldi/Publix's normal latency exactly. No special handling
--- needed going forward — this behaves like every other source now.
+-- Kroger's normal latency exactly. No special handling needed going
+-- forward — this behaves like every other source now.
 -- (All verification rows were TRUNCATEd afterward; the table was empty
 -- again before any real production data was expected.)

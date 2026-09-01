@@ -11,7 +11,9 @@
       "image": "573509103721.dkr.ecr.us-east-1.amazonaws.com/grocery-ingest:latest",
       "essential": true,
       "environment": [
-        { "name": "AWS_REGION", "value": "us-east-1" }
+        { "name": "AWS_REGION", "value": "us-east-1" },
+        { "name": "WALMART_CONSUMER_ID", "value": "adf198f2-f406-4a5e-93b5-31dc13468971" },
+        { "name": "WALMART_KEY_VERSION", "value": "2" }
       ],
       "secrets": [
         {
@@ -29,6 +31,10 @@
         {
           "name": "AWS_SECRET_ACCESS_KEY",
           "valueFrom": "arn:aws:secretsmanager:us-east-1:573509103721:secret:grocery-ingest/credentials-YTuek1:AWS_SECRET_ACCESS_KEY::"
+        },
+        {
+          "name": "WALMART_PRIVATE_KEY_PEM",
+          "valueFrom": "arn:aws:secretsmanager:us-east-1:573509103721:secret:grocery-ingest/walmart-key-IaNARX"
         }
       ],
       "logConfiguration": {

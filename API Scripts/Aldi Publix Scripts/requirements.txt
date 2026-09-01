@@ -1,5 +1,0 @@
-httpx>=0.27
-# optional, for the Parquet/Snowflake landing path
-pyarrow>=15.0
-# required for the S3 upload step (see NDJSONSink.upload_new_to_s3)
-boto3>=1.34
