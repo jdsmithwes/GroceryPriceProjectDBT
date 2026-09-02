@@ -13,7 +13,7 @@ the container's key-delivery mechanism were all verified working
 2026-09-01 (see below) before being wired into the schedule.
 
 **New since 2026-09-01**: every run of every source now writes a
-success/failure manifest to Snowflake (`GROCERY_RAW.ORCHESTRATION_JOB_RUNS`)
+success/failure manifest to Snowflake (`JOB_PERFORMANCE.ORCHESTRATION_JOB_RUNS`)
 — see "Job run history" below. Previously the only way to check "did last
 Friday's run actually succeed" was a CloudWatch log dive.
 
@@ -113,9 +113,14 @@ string — and `jdsmithwes` cannot `GetSecretValue` on the existing secret
 to read-modify-merge a new key into it without risking overwriting the
 AWS credentials with something wrong. Instead of touching that secret at
 all, the PEM content was pushed to a **new**, separate secret,
-`grocery-ingest/walmart-key` (plain string value, no JSON wrapping —
-already covered by the existing IAM policy's `grocery-ingest/*` scope, no
-new IAM grant needed). `entrypoint.sh` writes that env var's content to
+`grocery-ingest/walmart-key` (plain string value, no JSON wrapping).
+This did turn out to need a new IAM grant, not zero — see the IAM
+section below (item 3): `GroceryIngestTaskExecutionRole`'s actual
+`secretsmanager:GetSecretValue` policy was scoped specifically to
+`grocery-ingest/credentials-*`, not a broader `grocery-ingest/*`, so
+the first `test_infra` run against the new secret failed with
+`AccessDeniedException` until the policy's `Resource` was manually
+widened via the console. `entrypoint.sh` writes that env var's content to
 `/app/walmart_key.pem` at container startup and sets `WALMART_KEY_PATH`
 to point at it — `entire_productcatalog_walmart.py` itself needed zero
 code changes, since it already just reads `WALMART_KEY_PATH` from the
@@ -130,13 +135,13 @@ category as `AWS_REGION`) and are set as plain `environment` entries in
 Every source, on every run, writes a manifest via `record_run.py`
 (`--source --run-mode --status --started-at --completed-at [--error]`) to
 `s3://grocerydbtprojectrawdata/orchestration_runs/`, auto-ingested into
-`GROCERYDBTPROJECT.GROCERY_RAW.ORCHESTRATION_JOB_RUNS` — unlike the raw
+`GROCERYDBTPROJECT.JOB_PERFORMANCE.ORCHESTRATION_JOB_RUNS` — unlike the raw
 API landing tables (deliberately all-VARCHAR against schema drift from
 external payloads), this table has real types since its shape is fully
 first-party. Query it directly:
 
 ```sql
-SELECT * FROM GROCERYDBTPROJECT.GROCERY_RAW.ORCHESTRATION_JOB_RUNS
+SELECT * FROM GROCERYDBTPROJECT.JOB_PERFORMANCE.ORCHESTRATION_JOB_RUNS
 ORDER BY started_at DESC;
 ```
 
@@ -158,7 +163,8 @@ by hitting a real `AccessDenied`, not anticipated up front):
    `iam:SimulatePrincipalPolicy` — AccessDenied):
    - `GroceryIngestTaskExecutionRole` (trust: `ecs-tasks.amazonaws.com`) —
      `AmazonECSTaskExecutionRolePolicy` + inline `secretsmanager:GetSecretValue`
-     scoped to `grocery-ingest/*`.
+     scoped, as originally created, to just `grocery-ingest/credentials-*`
+     (narrower than it looked — see item 3).
    - `GroceryIngestSchedulerRole` (trust: `scheduler.amazonaws.com`) —
      inline `ecs:RunTask` scoped to the `grocery-ingest` task definition
      family + `iam:PassRole` scoped to `GroceryIngestTaskExecutionRole`.
@@ -169,10 +175,25 @@ by hitting a real `AccessDenied`, not anticipated up front):
    plus one inline policy for `iam:PassRole` on both new roles (never
    bundled into a full-access policy on purpose, by AWS design).
 3. `jdsmithwes` could `secretsmanager:ListSecrets` and `CreateSecret`
-   (scoped to `grocery-ingest/*`) but not `GetSecretValue` on existing
-   secrets — confirmed again 2026-09-01 when adding Walmart's key (worked
-   around by creating a new secret rather than reading/modifying the
-   existing one, see "Secrets" above).
+   (scoped to `grocery-ingest/*`) but not `GetSecretValue` — confirmed
+   both on the original `grocery-ingest/credentials` secret, and again
+   2026-09-01 in a more specific way: adding the new
+   `grocery-ingest/walmart-key` secret (see "Secrets" above) revealed
+   `GroceryIngestTaskExecutionRole`'s own `GetSecretValue` policy was
+   scoped to `grocery-ingest/credentials-*` specifically, not a
+   `grocery-ingest/*` wildcard as assumed — the first `test_infra` run
+   against the new secret failed with `AccessDeniedException`, and
+   `jdsmithwes` couldn't `iam:PutRolePolicy` to fix its own role's policy
+   (confirmed via direct attempt — `AccessDenied`, consistent with item 1
+   above's read-only-not-write IAM access). Required a manual console
+   edit of the role's inline policy to add
+   `arn:aws:secretsmanager:us-east-1:573509103721:secret:grocery-ingest/walmart-key-*`
+   to the `Resource` array. **Lesson**: a policy `Resource` pattern that
+   looks like a prefix wildcard from the outside (`grocery-ingest/*`,
+   inferred from `ListSecrets`/`CreateSecret` access) doesn't mean
+   `GetSecretValue` uses the same pattern — check the actual role policy
+   (`aws iam get-role-policy`, which `jdsmithwes` CAN read even though it
+   can't write) before assuming a new same-prefix secret is covered.
 4. `jdsmithwes` cannot `logs:GetLogEvents` — **fixed 2026-08-23** (same day,
    `CloudWatchLogsReadOnlyAccess` attached). `logs:PutRetentionPolicy` is
    still missing — low-stakes, just means the log group never expires.

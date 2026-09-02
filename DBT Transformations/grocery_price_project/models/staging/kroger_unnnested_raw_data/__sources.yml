@@ -3,7 +3,7 @@ version: 2
 sources:
   - name: kroger
     database: GROCERYDBTPROJECT
-    schema: GROCERY_RAW
+    schema: GROCERY_RAW_KROGER
     description: Raw Product Catalog, Product Pricing, Locations, and Inventory data from Kroger API
     tables:
       - name: kroger_inventory
