@@ -1,6 +1,6 @@
 """
 Writes a small JSON job-run manifest to S3 for auto-ingestion into
-GROCERY_RAW.ORCHESTRATION_JOB_RUNS (see
+JOB_PERFORMANCE.ORCHESTRATION_JOB_RUNS (see
 Snowflake Scripts/Orchestration/job_runs_ingestion_pipeline.sql). Called
 by entrypoint.sh's run_source function after every source finishes
 (success or failure) — this is what makes pipeline health queryable in

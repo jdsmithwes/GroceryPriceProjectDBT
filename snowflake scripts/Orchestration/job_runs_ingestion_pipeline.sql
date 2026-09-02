@@ -38,7 +38,14 @@ CREATE OR REPLACE STAGE GROCERYDBTPROJECT.AWS_RESOURCES.MY_S3_STAGE_ORCHESTRATIO
 -- the raw API landing tables (deliberately all-VARCHAR to defend against
 -- schema drift in external payloads), this table's shape is entirely
 -- under this project's own control, so it gets real types.
-CREATE OR REPLACE TABLE GROCERYDBTPROJECT.GROCERY_RAW.ORCHESTRATION_JOB_RUNS (
+--
+-- Lives in JOB_PERFORMANCE, not GROCERY_RAW_KROGER/GROCERY_RAW_WALMART —
+-- moved there 2026-09-01 once an existing, purpose-built, previously-
+-- unknown-to-these-sessions schema surfaced (owner DBT_ROLE, comment
+-- "schema that keeps track of the performance of ingestion runs"). It
+-- was originally created in GROCERY_RAW only because nobody realized
+-- JOB_PERFORMANCE already existed for exactly this.
+CREATE OR REPLACE TABLE GROCERYDBTPROJECT.JOB_PERFORMANCE.ORCHESTRATION_JOB_RUNS (
   SOURCE VARCHAR,
   RUN_MODE VARCHAR,
   STARTED_AT TIMESTAMP_NTZ,
@@ -50,13 +57,16 @@ CREATE OR REPLACE TABLE GROCERYDBTPROJECT.GROCERY_RAW.ORCHESTRATION_JOB_RUNS (
 );
 
 -- 4. [RUN ONCE — then AUTOMATIC] Snowpipe: auto-loads any new manifest
--- landing under orchestration_runs/ into GROCERY_RAW.ORCHESTRATION_JOB_RUNS.
+-- landing under orchestration_runs/ into JOB_PERFORMANCE.ORCHESTRATION_JOB_RUNS.
 -- Query-based COPY (not MATCH_BY_COLUMN_NAME) since the source is JSON,
--- not CSV — same shape as this project's other JSON pipes.
+-- not CSV — same shape as this project's other JSON pipes. The pipe
+-- itself stays in AWS_RESOURCES (not split by source, since job runs
+-- track both Kroger and Walmart) — same existing convention where a
+-- pipe's own schema doesn't have to match its target table's schema.
 CREATE OR REPLACE PIPE GROCERYDBTPROJECT.AWS_RESOURCES.ORCHESTRATION_JOB_RUNS_PIPE
   AUTO_INGEST = TRUE
 AS
-  COPY INTO GROCERYDBTPROJECT.GROCERY_RAW.ORCHESTRATION_JOB_RUNS
+  COPY INTO GROCERYDBTPROJECT.JOB_PERFORMANCE.ORCHESTRATION_JOB_RUNS
     (SOURCE, RUN_MODE, STARTED_AT, COMPLETED_AT, STATUS, ERROR_MESSAGE, ROWS_COLLECTED, INGESTED_FILENAME)
   FROM (
     SELECT
@@ -74,7 +84,7 @@ AS
 
 -- 4b. [ONE-TIME / ON-DEMAND — NOT part of the automatic path] Manual
 -- backfill/reload, same purpose as every other pipe's 4b in this project.
-COPY INTO GROCERYDBTPROJECT.GROCERY_RAW.ORCHESTRATION_JOB_RUNS
+COPY INTO GROCERYDBTPROJECT.JOB_PERFORMANCE.ORCHESTRATION_JOB_RUNS
     (SOURCE, RUN_MODE, STARTED_AT, COMPLETED_AT, STATUS, ERROR_MESSAGE, ROWS_COLLECTED, INGESTED_FILENAME)
   FROM (
     SELECT
