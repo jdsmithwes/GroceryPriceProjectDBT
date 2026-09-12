@@ -176,3 +176,47 @@ models:
         description: "Timestamp of the most recent collection run that observed this location."
         data_tests:
           - not_null
+
+  - name: int_retailer_product_categories
+    description: >
+      Cross-retailer category bridge: one row per retailer product + source
+      category, tagged with a retailer-neutral COMMON_CATEGORY from the
+      retailer_category_crosswalk seed (Kroger department names as the shared
+      vocabulary). Join Kroger rows to Walmart rows on COMMON_CATEGORY (filter
+      CROSSWALK_STATUS = 'mapped') to compare products in the same category.
+      Kroger products can have several categories, so they can appear on
+      several rows; Walmart items have exactly one row.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - RETAILER
+              - PRODUCT_ID
+              - SOURCE_CATEGORY
+              - SOURCE_SUBCATEGORY
+    columns:
+      - name: RETAILER
+        description: "'kroger' or 'walmart'."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['kroger', 'walmart']
+      - name: PRODUCT_ID
+        description: "Retailer's own product id, as a string: Kroger PRODUCT_ID (join to int_kroger_* models) or Walmart ITEM_ID (join to stg_walmart_product_catalog / int_walmart_price_history)."
+        data_tests:
+          - not_null
+      - name: COMMON_CATEGORY
+        description: "Retailer-neutral category to join on. NULL when CROSSWALK_STATUS is 'excluded' or 'unmapped'."
+      - name: SOURCE_CATEGORY
+        description: "Retailer's own category label — a Kroger category, or the category level of Walmart's CATEGORY_PATH."
+      - name: SOURCE_SUBCATEGORY
+        description: "Walmart's subcategory level of CATEGORY_PATH. Always NULL for Kroger."
+      - name: CROSSWALK_STATUS
+        description: "'mapped', 'excluded' (deliberately blank COMMON_CATEGORY in the crosswalk, e.g. Flower Shop), or 'unmapped' (label not in the crosswalk yet — add it to seeds/retailer_category_crosswalk.csv)."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['mapped', 'excluded']
+              config:
+                severity: warn
