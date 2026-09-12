@@ -98,6 +98,39 @@ models:
         data_tests:
           - not_null
 
+  - name: int_walmart_price_history
+    config:
+      materialized: view
+      group: walmart
+    description: >
+      SCD Type 2 price history derived from stg_walmart_product_catalog.
+      One row per contiguous span of unchanged MSRP/SALE_PRICE for a given
+      ITEM_ID — collapses the raw layer's append-only history down to
+      actual price change events. Grain is ITEM_ID alone (no location
+      dimension — Walmart catalog pricing is national). Filtered to rows
+      with an MSRP and/or SALE_PRICE; items with neither are not tracked
+      here (see model header for a note on a possible future unpriced
+      companion model).
+    columns:
+      - name: ITEM_ID
+        description: "Walmart item id — see stg_walmart_product_catalog for the ID-as-string convention."
+        data_tests:
+          - not_null
+      - name: MSRP
+        description: "Manufacturer's suggested retail price at the start of this version's validity window. Constant for the entire version by construction."
+      - name: SALE_PRICE
+        description: "Walmart's selling price at the start of this version's validity window. Constant for the entire version by construction."
+      - name: VALID_FROM
+        description: "COLLECTED_AT of the first observation where this exact MSRP/SALE_PRICE combination was seen. Inclusive lower bound."
+        data_tests:
+          - not_null
+      - name: VALID_TO
+        description: "COLLECTED_AT of the next version's VALID_FROM — the first moment the price was observed to have changed. Exclusive upper bound. NULL for the current version."
+      - name: LAST_SEEN_AT
+        description: "COLLECTED_AT of the most recent observation that still had this same price."
+      - name: IS_CURRENT
+        description: "TRUE for the most recent price version of this item (VALID_TO IS NULL) — exactly one TRUE row per ITEM_ID, assuming at least one priced observation exists."
+
   - name: int_kroger_locations_current
     config:
       materialized: view

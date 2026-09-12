@@ -1,0 +1,15 @@
+version: 2
+
+sources:
+  - name: walmart
+    database: GROCERYDBTPROJECT
+    schema: GROCERY_RAW_WALMART
+    description: Raw product catalog/pricing data from the Walmart Affiliate API.
+    tables:
+      - name: walmart_product_catalog
+        description: The table contains Walmart's product catalog with national list/sale pricing. Each record represents a single product observed in one collection run — append-only, same ITEMID reappears with a new COLLECTED_AT on each re-run.
+        config:
+          loaded_at_field: "collected_at"
+          freshness:
+            warn_after: {count: 30, period: day}
+            error_after: {count: 45, period: day}
