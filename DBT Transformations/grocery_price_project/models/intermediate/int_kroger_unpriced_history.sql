@@ -1,9 +1,14 @@
-{{ config(materialized='table') }}
+{{ config(
+    materialized='dynamic_table',
+    target_lag='24 hours',
+    snowflake_warehouse='COMPUTE_WH',
+    refresh_mode='FULL'
+) }}
 
--- Materialized as a table (not view): same reasoning as
+-- Materialized as a dynamic table (not view): same reasoning as
 -- int_kroger_price_history — 12 queries/7 days measured at ~1.19s and
--- ~121MB scanned each as a view, negligible storage cost to avoid that.
--- Rerun `dbt run` after each new pricing collection run to refresh it.
+-- ~121MB scanned each as a view. Refreshes itself within 24h of new RAW
+-- data; FULL refresh for the same every-partition-changes-weekly reason.
 --
 -- Companion to int_kroger_price_history: tracks SPANS where a product
 -- had NEITHER a PRICE_REGULAR NOR a PRICE_PROMO at a given
@@ -115,4 +120,3 @@ select
 
 from final
 where IS_UNPRICED
-order by PRODUCT_ID, LOCATION_ID, VALID_FROM

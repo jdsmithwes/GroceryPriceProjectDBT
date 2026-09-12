@@ -1,15 +1,20 @@
-{{ config(materialized='table') }}
+{{ config(
+    materialized='dynamic_table',
+    target_lag='24 hours',
+    snowflake_warehouse='COMPUTE_WH',
+    refresh_mode='FULL'
+) }}
 
 -- SCD Type 2 price history, one row per contiguous span of unchanged
 -- PRICE_REGULAR/PRICE_PROMO for a given PRODUCT_ID + LOCATION_ID.
 --
--- Materialized as a table (not view): this is the single most-queried
--- object in the project (49 queries/7 days measured, ~1.85s and ~580MB
--- scanned each, since as a view it re-ran the full window-function pass
--- over the entire price history every time). Storage cost of the
--- collapsed result is negligible next to that recurring compute. Rerun
--- `dbt run` after each new pricing collection run to refresh it —
--- IS_CURRENT/VALID_TO won't reflect new data until then.
+-- Materialized as a dynamic table (not view): as a view this re-ran the
+-- full window-function pass on every query (49 queries/7 days measured,
+-- ~1.85s and ~580MB scanned each). As a dynamic table it refreshes itself
+-- within 24h of new RAW data landing — no manual `dbt run` after each
+-- collection. refresh_mode FULL, not INCREMENTAL: every weekly sweep adds
+-- an observation to nearly every PRODUCT_ID + LOCATION_ID partition, so an
+-- incremental refresh would recompute almost every window partition anyway.
 --
 -- The raw layer is already append-only (every ingestion run lands new
 -- rows in RAW.KROGER_PRICING/KROGER_INVENTORY rather than overwriting),
@@ -129,4 +134,3 @@ select
     ) is null as IS_CURRENT
 
 from collapsed
-order by PRODUCT_ID, LOCATION_ID, VALID_FROM

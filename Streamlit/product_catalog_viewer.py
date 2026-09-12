@@ -21,14 +21,14 @@ def load_stores():
     # of them. Without this filter the dropdown could default to a store
     # with zero data and make the app look broken.
     return session.sql("""
-        SELECT DISTINCT
+        SELECT
             l.LOCATION_ID,
             l.NAME,
             l.ADDRESS_LINE1,
             l.CITY,
             l.STATE,
             l.ZIP_CODE
-        FROM GROCERYDBTPROJECT.GROCERY_STAGING.DBT_STG_JSON_KROGER_LOCATIONS l
+        FROM GROCERYDBTPROJECT.GROCERY_INTERMEDIATE.DBT_INT_KROGER_LOCATIONS_CURRENT l
         WHERE l.LOCATION_ID IS NOT NULL AND l.NAME IS NOT NULL
           AND l.LOCATION_ID IN (
               SELECT DISTINCT LOCATION_ID
@@ -57,25 +57,14 @@ def load_products(search_term, brand_filter, limit, location_id, price_only):
             s.DELIVERY,
             s.IN_STORE,
             s.SHIP_TO_HOME
-        FROM GROCERYDBTPROJECT.GROCERY_STAGING.DBT_STG_KROGER_PRODUCT_CATALOG p
+        FROM GROCERYDBTPROJECT.GROCERY_INTERMEDIATE.DBT_INT_KROGER_PRODUCT_CATALOG_CURRENT p
         LEFT JOIN GROCERYDBTPROJECT.GROCERY_INTERMEDIATE.DBT_INT_KROGER_PRICE_HISTORY ph
             ON p.PRODUCT_ID = ph.PRODUCT_ID
             AND ph.LOCATION_ID = ?
             AND ph.IS_CURRENT = TRUE
-        LEFT JOIN (
-            SELECT
-                PRODUCT_ID,
-                LOCATION_ID,
-                STOCK_LEVEL,
-                CURBSIDE,
-                DELIVERY,
-                IN_STORE,
-                SHIP_TO_HOME
-            FROM GROCERYDBTPROJECT.GROCERY_STAGING.DBT_STG_JSON_KROGER_PRODUCT_SNAPSHOT_ITEMS
-            WHERE LOCATION_ID = ?
-            QUALIFY ROW_NUMBER() OVER (PARTITION BY PRODUCT_ID, LOCATION_ID ORDER BY COLLECTED_AT DESC) = 1
-        ) s
+        LEFT JOIN GROCERYDBTPROJECT.GROCERY_INTERMEDIATE.DBT_INT_KROGER_ITEMS_CURRENT s
             ON p.PRODUCT_ID = s.PRODUCT_ID
+            AND s.LOCATION_ID = ?
         WHERE p.IMAGE_URL IS NOT NULL
     """
     params = [location_id, location_id]
@@ -96,7 +85,7 @@ def load_products(search_term, brand_filter, limit, location_id, price_only):
 def load_brands():
     df = session.sql("""
         SELECT DISTINCT BRAND
-        FROM GROCERYDBTPROJECT.GROCERY_STAGING.DBT_STG_KROGER_PRODUCT_CATALOG
+        FROM GROCERYDBTPROJECT.GROCERY_INTERMEDIATE.DBT_INT_KROGER_PRODUCT_CATALOG_CURRENT
         WHERE BRAND IS NOT NULL
         ORDER BY BRAND
         LIMIT 200

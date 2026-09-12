@@ -3,7 +3,6 @@ version: 2
 models:
   - name: int_kroger_price_history
     config:
-      materialized: view
       group: kroger
     description: >
       SCD Type 2 price history derived from stg_json_kroger_product_snapshot_items.
@@ -43,7 +42,6 @@ models:
 
   - name: int_kroger_unpriced_history
     config:
-      materialized: view
       group: kroger
     description: >
       Companion to int_kroger_price_history: SCD Type 2 history of spans
@@ -73,6 +71,31 @@ models:
         description: "COLLECTED_AT of the most recent observation still confirmed unpriced within this span."
       - name: IS_CURRENT
         description: "TRUE if this product+location is unpriced as of the most recent observation (VALID_TO IS NULL) — meaning it currently has no corresponding row in int_kroger_price_history. FALSE once pricing has resumed at least once."
+
+  - name: int_kroger_items_current
+    config:
+      group: kroger
+    description: >
+      Latest stg_json_kroger_product_snapshot_items row per PRODUCT_ID +
+      LOCATION_ID — current stock level and fulfillment options per store.
+      Serving model for the Streamlit app.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - PRODUCT_ID
+              - LOCATION_ID
+    columns:
+      - name: PRODUCT_ID
+        data_tests:
+          - not_null
+      - name: LOCATION_ID
+        data_tests:
+          - not_null
+      - name: COLLECTED_AT
+        description: "Timestamp of the most recent collection run that observed this product at this location."
+        data_tests:
+          - not_null
 
   - name: int_kroger_product_catalog_current
     config:
