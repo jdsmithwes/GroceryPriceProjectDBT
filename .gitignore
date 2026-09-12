@@ -1,0 +1,28 @@
+# Secrets — never commit
+.env
+credentials/
+*.pem
+*.p8
+*.p12
+*.pfx
+*_private_key*
+*_rsa_key_pair*
+WM_IO_*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Generated data output (regenerable from scripts)
+data/
+
+# dbt build artifacts (regenerated on every run)
+logs/
+target/
+dbt_packages/
+.user.yml
+
+# OS
+.DS_Store

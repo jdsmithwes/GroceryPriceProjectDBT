@@ -1,223 +1,122 @@
-# Claude Code Context for GroceryPriceProject
+# GroceryPriceProject (SalePredictor) — Context
 
-## Project Overview
+**Owner**: Jamaal Smith (jdsmith1906@gmail.com), SmoothData · **Last Updated**: 2026-09-12
 
-**Goal**: Build a data pipeline to collect grocery pricing data from Kroger and Walmart, store it in Snowflake, transform it with dbt, and forecast when items will go on sale using AI.
+**Goal**: collect grocery pricing/inventory/location data from Kroger and Walmart, land it in Snowflake via event-driven Snowpipe, transform with dbt, forecast sale timing. Full architecture + diagram: **`Project Architecture.md`** (repo root) — read that first for the big picture; this file is operational detail and hard-won gotchas. Note: `Project Architecture.md` predates the Orchestration work below and hasn't been fully rewritten to match — where the two disagree, this file and `Orchestration/README.md` are the current truth. **Aldi and Publix were removed from this project entirely on 2026-08-31** — Aldi's API host never resolved (D12, unfixable without a real replacement endpoint that was never found) and Publix was never live-verified at all. If you find a stale reference to either, it's leftover documentation, not a hint to rebuild them.
 
-**Owner**: Jamaal Smith (jdsmith1906@gmail.com)
-
----
-
-## Tech Stack
-
-- **APIs**: Kroger Products API, Walmart Affiliate Marketing API
-- **Data Warehouse**: Snowflake
-- **Transformation**: dbt (data build tool)
-- **Analysis**: Python + AI for forecasting
-- **Language**: Python 3.x
+**Status**: Phase 1 done. Phase 2/3 (Snowflake + Kroger ingestion) working end-to-end, pricing collected for all 81 known Kroger stores as of 2026-08-15, with a fresh reset-and-resweep triggered manually 2026-08-23 (see Phase 3). **Walmart auth resolved 2026-08-31** — `entire_productcatalog_walmart.py` is live-verified working end-to-end (fetch, category-scoped filter, flatten, S3 upload); see below for details. **Snowflake landing infrastructure built and verified 2026-08-31** — `GROCERY_RAW_WALMART.WALMART_PRODUCT_CATALOG` (explicit VARCHAR schema, not INFER_SCHEMA-derived — see `Snowflake Scripts/Kroger Raw Data/productcatalog_ingestion_pipeline.sql`'s Walmart section; schema renamed from `GROCERY_RAW` on 2026-09-01, see the Snowflake section below), `WALMART_PRODUCT_CATALOG_PIPE`, and its S3 Event Notification are all live and proven end-to-end with real auto-ingest (~17s upload-to-row latency, matching Kroger's own pipes). Full production pull (the actual 500-page-capped catalog walk) not yet run — the infrastructure is ready to receive it, nothing has been sent through it yet except cleanup-verified test data. Phase 4 (dbt) well underway: full Kroger staging layer (16 models) plus an intermediate layer (price history + "current state" convenience models, see below); marts not started. A Streamlit-in-Snowflake app (`Streamlit/product_catalog_viewer.py`) browses the catalog with images, pricing, and inventory per store. **Kroger runs on a real weekly schedule** (EventBridge Scheduler + Fargate, see `Orchestration/README.md`) — proven working (2026-08-23 live run); Walmart is being added to that same schedule as of 2026-08-31 (see Orchestration section below).
 
 ---
 
-## Project Structure
+## Engineering Guidelines
 
-```
-GroceryPriceProject/
-├── .claude/
-│   ├── instructions.md                    # This file
-│   └── SETUP.md                          # Setup instructions
-├── credentials/
-│   ├── walmart/
-│   │   ├── WM_IO_private_key.pem         # RSA private key (NEVER share)
-│   │   └── WM_IO_public_key.pem          # RSA public key
-│   └── kroger/
-│       ├── client_id.txt
-│       └── client_secret.txt
-├── scripts/
-│   ├── test_api_credentials.py           # Test both APIs
-│   ├── ingest_walmart_prices.py          # Walmart data ingestion
-│   └── ingest_kroger_prices.py           # Kroger data ingestion
-├── dbt/
-│   ├── models/
-│   │   ├── staging/
-│   │   ├── marts/
-│   │   └── analyses/
-│   └── dbt_project.yml
-├── .env                                  # API credentials (gitignored)
-├── .gitignore
-└── README.md
-```
+**Cost-effectiveness**: any script driving compute (API polling, concurrent pulls, warehouses/pipes, scheduled jobs) should minimize resource usage — avoid redundant API calls across scripts pulling overlapping data, right-size warehouse compute (auto-suspend, smallest size), batch/dedupe over brute-force re-pulls.
+
+**Raw-landing convention**: ingestion scripts do NOT transform/flatten/join API data. Pull out only join/partition keys as real columns (`productId`, `locationId`, `collected_at`); everything else is preserved as untouched JSON text in `raw_data`. All parsing/joining/business logic belongs in dbt, not Python or the landing tables.
+
+**Where the detail lives**: each script's docstring has live-tested endpoint/field/gotcha specifics — check the source before re-deriving anything:
+- `API Scripts/Kroger Scripts/Product Catalogs/entire_productcatalog_kroger.py`
+- `API Scripts/Kroger Scripts/Product Location/`, `Product Pricing/` — one Kroger script each. **`Product Inventory/Kroger_Inventory_*.py` was retired 2026-08-14** — confirmed it hits the identical `/v1/products` endpoint and returns the identical response as the Pricing script (price + `stockLevel` + fulfillment all come back together), so running both just doubled API calls for duplicate data. Deleted from the repo entirely (not just unused) so it can't get run by accident.
+- `API Scripts/Walmart Scripts/entire_productcatalog_walmart.py`, `walmart_taxonomy.py`
+- `Orchestration/README.md` — the weekly scheduled pipeline (EventBridge Scheduler + Fargate), added 2026-08-23 for Kroger, extended 2026-08-31 for Walmart. Read before touching any of the AWS resources it created — the IAM section in particular explains a string of `jdsmithwes` permission gaps that took several rounds to discover; don't assume access to a new AWS service exists just because access to an adjacent one does.
+- `snowflake scripts/Kroger Raw Data/*.sql` — one pipeline file per source, naming convention `%source%_ingestion_pipeline.sql`
+- `Project Architecture.md` (repo root) — "Kroger Staging Layer (dbt)" section has the full 3-layer lineage diagrams + reasoning for why arrays are separate models from objects
+- `DBT Transformations/grocery_price_project/models/staging/kroger_unnnested_raw_data/_models.yml` — every column, for every Layer 1/2 model, in one place; fill in descriptions/tests here as you go
+- `DBT Transformations/grocery_price_project/models/intermediate/_models.yml` — same, for the intermediate layer (price history + current-state models)
+
+**PROJECT_ROOT gotcha, recurring**: every ingestion script computes `PROJECT_ROOT = Path(__file__).resolve()` plus N `.parent`s, then does `load_dotenv(PROJECT_ROOT / ".env")` — get the parent count wrong and `.env` silently fails to load (no exception), surfacing later as a confusing `KeyError` on whatever env var is read first. The right count is **the number of folders between the repo root and the script**, e.g. 4 for `API Scripts/Kroger Scripts/Product Catalogs/foo.py` (`API Scripts` → `Kroger Scripts` → `Product Catalogs` → repo root). This bit all four Kroger scripts on 2026-08-14 after the `Kroger Scripts` folder was inserted a level deeper without updating them (fixed then); it already bit the Walmart scripts once too, fixed by coincidence when they moved to a shallower folder. **Any time a script gets moved into/out of a folder, recheck this line** — don't assume it still resolves correctly. Quick check: `python3 -c "from pathlib import Path; print(Path('<script path>').resolve().parent.parent...)"` and confirm it prints the repo root.
 
 ---
 
-## API Credentials
+## Credentials & Blockers
 
-### Walmart
-- **Consumer ID**: a9d00627-32ca-4016-acc5-4dbe58ea5009
-- **Private Key Location**: `credentials/walmart/WM_IO_private_key.pem`
-- **API Type**: Affiliate Marketing API
-- **Rate Limit**: Check dashboard for your quota
-- **Docs**: https://walmart.io/docs/affiliates/v1/affiliate-marketing-api
+**Kroger** — fully working, live-tested throughout. OAuth2 client credentials in `.env` (`KROGER_CLIENT_ID`/`SECRET`), scope `product.compact`. 10,000 calls/day (pipelines built so far use a few hundred each). No bulk catalog endpoint — scripts crawl by search term or batch by known `productId` (max 50/call, server-enforced). Gotcha: `productId`/`upc` have meaningful leading zeros — always `pd.read_csv(..., dtype=str)`.
 
-### Kroger
-- **Client ID**: [Stored in credentials/kroger/]
-- **Client Secret**: [Stored in credentials/kroger/]
-- **API Type**: Products API (OAuth 2.0)
-- **Rate Limit**: 10,000 calls/day
-- **Docs**: [Kroger API OpenAPI spec in project]
+**Walmart** — WORKING as of 2026-08-31. Current `.env` values: `WALMART_CONSUMER_ID=adf198f2-f406-4a5e-93b5-31dc13468971` (app "GroceryProjectDBTSecond", Prod), `WALMART_KEY_PATH=/Users/jamaalsmith/credentials/walmart/WM_IO_private_key_20260831v2.pem`, `WALMART_KEY_VERSION=2` (the script reads this env var, defaulting to `"1"` if unset — necessary because re-uploading a key to an existing Consumer ID *increments* its version rather than replacing version 1). A live smoke test returns 200 with real catalog data.
+
+**How this got resolved, and the dead ends along the way (read before touching Walmart auth again)**:
+- The original blocker (WALMARTIO-6695, portal's "Upload Public Key" dialog spinning and silently closing) was fixed on Walmart's side at some point between 2026-08-13 and 2026-08-22 — support ticket thread (`iosupport@wal-mart.com`) shows them confirming a working reference app on 2026-08-22. Getting a Prod Consumer ID was no longer the blocker by the time this session picked the work back up.
+- The *new* blocker that replaced it: every combination of the two pre-existing local key pairs (original 2026-08-09, "newapp" 2026-08-11) against two different Prod Consumer IDs returned `401 Signature verification failed`. This looked like it could be a signing-code bug, so the signing implementation (`WalmartAuth.build_headers()` — string-to-sign is `consumerId\nintimestamp\nkeyVersion\n`, SHA256withRSA, PKCS1v15 padding, base64) was independently re-verified against Walmart's own documentation (walmartdigital.cl's B2B API docs, same affiliate-API stack) and confirmed byte-for-byte correct. **It was never a code bug.**
+- Root cause was a real key mismatch: whatever public key Walmart actually had registered server-side didn't match either local private key. Fix: generate a fresh key pair, upload it, and **confirm the portal's displayed key version actually incremented** (e.g. 1→2) — the upload dialog itself shows no success/failure confirmation either way, so a version bump is the only real signal an upload took effect. One upload attempt even showed an unrecognized public key pre-filled in the form (didn't match any locally-held key, and an exhaustive filesystem search found no matching private key anywhere) — clearing the field and re-pasting fresh resolved it.
+- Even after a confirmed version bump, the very next call still failed, but with a *different* error (`"Public Key not found for Consumer id"` rather than the signature-mismatch one) — the portal's key-upload endpoint and the downstream auth-verification service were transiently out of sync. Resolved on its own within a few minutes of retrying; no config change fixed it.
+- Full narrative with every dead end: see the module docstring in `API Scripts/Walmart Scripts/entire_productcatalog_walmart.py`.
+
+**Key material history**: the original `WM_IO_private_key.pem`/`WM_IO_public_key.pem` pair was briefly, accidentally committed to this **public** GitHub repo at the repo root (commit `3e61091`, 2026-08-14) and is treated as compromised regardless of whether it was ever actually the registered key — remediated via `git filter-repo` + force-push, `.gitignore` hardened (`*.pem`, `WM_IO_*`). Several more key pairs were generated during the 2026-08-31 debugging above; only `WM_IO_private_key_20260831v2.pem` (PKCS#8 format, generated via Walmart's own documented `openssl genrsa` → `openssl pkcs8 -topk8` → `openssl rsa -pubout` flow) is the one actually in use — the others (`_20260831.pem` and earlier) are dead, kept only for reference. **Gotcha for the future**: never let credential files sit at the repo root, even briefly — a blanket `git add -A` will sweep them in. Generate/copy key material directly into `/Users/jamaalsmith/credentials/walmart/` (gitignored via the `credentials/` rule) and nowhere else.
+
+**CATALOG_FILTERS fixed 2026-08-31**: previously a placeholder unfiltered walk (`[{}]`) relying on client-side keyword matching against `name`/`longDescription`, which false-positived badly (e.g. a cooler matched on "keep food and drinks cold", a headlamp matched on "produces" containing "produce"). Now server-side scoped to Walmart's real "Food" department (`{"category": "976759"}`), confirmed live against the Taxonomy API (`walmart_taxonomy.py` — run it, see the "Direct children of Food" output for sub-category ids if finer-grained filters are ever needed) — 600/600 items matched in a verification pull. The remaining client-side `is_grocery_item()` check now matches on `categoryPath` only (not `name`/`longDescription`), as a belt-and-suspenders check on top of the server-side scoping rather than the primary filter.
+
+**AWS** — bucket `grocerydbtprojectrawdata`, account `573509103721`, region `us-east-1`. IAM user `jdsmithwes` can fully manage S3 (uploads, bucket notifications) but **cannot touch IAM** (`AccessDenied` on create/update policy/role, even read calls like `ListAttachedUserPolicies`) — any IAM change needs the AWS root/admin console, not CLI. **This pattern turned out to be much broader than just IAM**: building the Orchestration pipeline (2026-08-23) found `jdsmithwes` had *zero* access to ECR, ECS, and EventBridge Scheduler, plus narrower gaps in Secrets Manager (`CreateSecret`) and CloudWatch Logs (`GetLogEvents`, `PutRetentionPolicy`) — each only discovered by hitting a live `AccessDenied`, not something inferrable from the S3/IAM note alone. **Don't assume access to any AWS service exists here just because access to an adjacent one does.** Full list of what was granted and why: `Orchestration/README.md`'s IAM section.
+
+**Snowflake** — account `TPRFGUJ-JNC76647`, database `GROCERYDBTPROJECT`, warehouse `COMPUTE_WH` (XSMALL, auto-suspend 60s). Schema history: `RAW` → `GROCERY_RAW` (renamed after 2026-08-11) → **split by source on 2026-09-01** into `GROCERY_RAW_KROGER` / `GROCERY_RAW_WALMART` (raw landing tables) once the schema held a real mix of both sources' objects. `AWS_RESOURCES` was split the same day into `AWS_RESOURCES_KROGER` / `AWS_RESOURCES_WALMART` (per-source stages/pipes); genuinely shared objects (file formats, the root `GROCERY_PRICE_PROJECT_STAGE`, `MY_S3_STAGE_ORCHESTRATION_RUNS`) stayed in plain `AWS_RESOURCES`. `GROCERY_STAGING` (dbt staging models) and `GROCERY_INTERMEDIATE` were deliberately **not** split by source while both were 100% Kroger — the plan all along was to decide Walmart's schema once it had its first dbt models. **That happened 2026-09-12**: Walmart's first two dbt models (`stg_walmart_product_catalog`, `int_walmart_price_history` — see the dbt section below) got their own `GROCERY_STAGING_WALMART` / `GROCERY_INTERMEDIATE_WALMART` schemas via per-model `+schema:` config overrides (no `dbt_project.yml` changes needed), mirroring the raw/AWS per-source split. `GROCERY_STAGING`/`GROCERY_INTERMEDIATE` remain Kroger-only going forward — any future Kroger model stays there, any future Walmart model gets its own `_WALMART`-suffixed schema the same way. `JOB_PERFORMANCE` — an existing, previously-unnoticed schema (`comment: "schema that keeps track of the performance of ingestion runs"`) — is where `ORCHESTRATION_JOB_RUNS` actually belongs and was moved to on 2026-09-01. **If any doc/script still says plain `RAW` or unqualified `GROCERY_RAW`/`AWS_RESOURCES` for a Kroger/Walmart-specific object, it's stale** — check the per-source schema instead.
+
+**`GROCERY_RAW` is not what it sounds like — it's dbt's *seed* schema, unrelated to raw landing data.** Correction to an earlier mistake in this file: the 6 tables once described here as "leftover dbt tutorial-scaffold data, dropped 2026-09-01" (`RAW_CUSTOMERS`/`RAW_ITEMS`/`RAW_ORDERS`/`RAW_PRODUCTS`/`RAW_STORES`/`RAW_SUPPLIES`) are real, active **dbt seeds** — CSV files checked into `DBT Transformations/grocery_price_project/seeds/`, built via `seeds: +schema: raw` in `dbt_project.yml` combined with the profile's base `schema: grocery`. Dropping the Snowflake-side table without touching the seed files never had a chance to stick — the very next `dbt build`/`dbt seed` just recreated them, which is exactly what happened. `GROCERY_RAW` only coincidentally shared a name with the old, pre-split Kroger/Walmart raw landing schema (also hand-built via raw SQL, totally unrelated to dbt) — now that that schema is `GROCERY_RAW_KROGER`/`GROCERY_RAW_WALMART`, `GROCERY_RAW` is unambiguously "dbt's seed output" and nothing else.
+
+**Every dbt-built object (models AND seeds) gets a `DBT_` prefix**, as of 2026-09-11 — `DBT Transformations/grocery_price_project/macros/generate_alias_name.sql` overrides dbt's built-in `generate_alias_name` macro project-wide. This exists to distinguish dbt output from hand-built objects sharing the same database (the Kroger/Walmart raw landing tables, Snowpipe pipes/stages). Before this macro existed, someone manually renamed a handful of objects to `DBT_*` directly in Snowflake to get the same effect — but `ALTER ... RENAME`/manual `CREATE OR REPLACE` under a new name doesn't survive the next `dbt run` (dbt has no record of the rename and just recreates the object under its default name), and worse, doesn't even remove the old-named object — it leaves both the old and new names sitting side by side as duplicates. Found and cleaned up 2026-09-11: `GROCERY_STAGING_KROGER` and `GROCERY_INTERMEDIATE_KROGER` (two entirely separate, undocumented schemas, apparently from an earlier abandoned experiment predating any session-visible history — created 2026-08-10/2026-08-14, disconnected from `dbt_project.yml`'s actual `+schema:` config the whole time) had drifted into 22 orphaned pre-consolidation views (`STG_JSON_KROGER_INVENTORY*`/`STG_JSON_KROGER_PRICING*`, from before the documented "cut staging from 28 models to 16" decision) plus stale, incomplete duplicate data — both schemas were dropped after a fresh `dbtg build` confirmed the real, `dbt_project.yml`-connected `GROCERY_STAGING`/`GROCERY_INTERMEDIATE` were complete and current. **Lesson**: `SHOW SCHEMAS` across the whole database periodically, not just the specific schema names you expect to exist — these two sat unnoticed through multiple sessions because every check queried known names directly rather than listing everything.
+
+**CLI now works** (fixed 2026-08-10): `~/.snowflake/connections.toml` `[default]` uses key-pair auth (`~/.ssh/snowflake_rsa_key.p8`) pointed at this project's db/warehouse/role; the matching public key is registered on `jdsmithwes` via `ALTER USER ... SET RSA_PUBLIC_KEY`. Use `snow sql -q "..."` directly instead of asking the user to paste query results back.
 
 ---
 
-## Environment Variables (.env)
+## dbt
 
-```bash
-# Walmart
-WALMART_CONSUMER_ID=<your_consumer_id>
-WALMART_KEY_PATH=credentials/walmart/WM_IO_private_key.pem
+**Project**: `DBT Transformations/grocery_price_project/` (renamed from the default `dbt init` scaffold — don't be surprised by leftover references to `jaffle_shop` in old commits). **Always run dbt via the `dbtg` shell function** (added to `~/.zshrc`), not bare `dbt`/`dbtf` — it auto-targets this project's `--project-dir` regardless of current directory: `dbtg run`, `dbtg test`, `dbtg compile`, etc. Bare `dbt`/`dbtf` will fail with "No dbt_project.yml found" unless you're sitting in the exact project directory.
 
-# Kroger
-KROGER_CLIENT_ID=<your_client_id>
-KROGER_CLIENT_SECRET=<your_client_secret>
+**Connection**: `~/.dbt/profiles.yml`, profile `grocery_price_project`, same key-pair auth as the `snow` CLI (`~/.ssh/snowflake_rsa_key.p8`, role `ACCOUNTADMIN`). Profile's base `schema: grocery` combines with each model's `+schema:` config (`staging`/`marts` in `dbt_project.yml`) into dbt's default `{base}_{custom}` naming — so staging models land in `GROCERYDBTPROJECT.GROCERY_STAGING`, not `RAW`; every object within it (and seeds, in `GROCERY_RAW`) gets a `DBT_` prefix via `macros/generate_alias_name.sql` (see the Snowflake section above). (Other unrelated profiles — `dbt_stockproject` etc. — also live in that same `profiles.yml`; don't touch those. `my_dbt_project`'s and `dbt_stockproject`'s profiles have plaintext credentials in that file — worth rotating/switching to key-pair auth at some point, noticed 2026-09-11, not this project's concern to fix.)
 
-# Snowflake
-SNOWFLAKE_ACCOUNT=<your_account>
-SNOWFLAKE_USER=<your_user>
-SNOWFLAKE_PASSWORD=<your_password>
-SNOWFLAKE_WAREHOUSE=<warehouse_name>
-SNOWFLAKE_DATABASE=grocery_prices
-SNOWFLAKE_SCHEMA=raw
-```
+**Folder structure**: all 16 Kroger staging models live in one folder, `models/staging/kroger_unnnested_raw_data/` — Layer 1 (`stg_kroger_*`, thin rename), Layer 2 (`stg_json_kroger_*`, JSON keys + fixed-shape objects flattened), and the 11 Layer 3 array fan-out models (`stg_json_kroger_product_snapshot_items`, `_images`, `_nutrition_information`, etc., plus `stg_json_kroger_locations_departments`), alongside `_models.yml` and `__sources.yml`. Full reasoning + lineage diagrams in `Project Architecture.md`. `models/marts/` is currently empty — the original dbt-init tutorial content (customers/orders/products) was deleted as unrelated boilerplate.
+
+**Intermediate layer** (`models/intermediate/`, added 2026-08-14/15): `int_kroger_price_history` / `int_kroger_unpriced_history` collapse the append-only pricing/inventory staging history into SCD Type-2 version spans (`VALID_FROM`/`VALID_TO`/`IS_CURRENT`) per PRODUCT_ID+LOCATION_ID — this is the actual "price history" the project exists to produce, query `WHERE IS_CURRENT = TRUE` for current price. `int_kroger_product_catalog_current` / `int_kroger_locations_current` are simpler "latest row per key" convenience views over the catalog/locations staging models, which are append-only across collection runs the same way pricing is. **Don't collapse the staging layer itself to latest-only** — that's exactly what would delete the history these intermediate models depend on; the raw-landing convention (staging layer = untouched full history) plus a collapsing intermediate layer on top is the pattern, not a staging-layer dedup.
+
+**Walmart's first dbt models, added 2026-09-12**: `models/staging/walmart_unnested_raw_data/stg_walmart_product_catalog` (thin rename + `MSRP`/`SALE_PRICE` cast to `NUMBER(10,2)`, since `WALMART_PRODUCT_CATALOG` is all-VARCHAR per the raw-landing convention) and `models/intermediate/int_walmart_price_history` — a direct mirror of `int_kroger_price_history`'s SCD Type-2 technique (`LAG`/`IS DISTINCT FROM`/windowed `SUM`/`LEAD`), with two structural differences: grain is `ITEM_ID` alone (Walmart catalog pricing is national — no per-store `LOCATION_ID` dimension the way Kroger has), and it's `materialized='view'`, not `table` — Kroger's table promotion was earned by a measured cost review (see below); no equivalent usage exists yet for Walmart at ~4,400 raw rows, so it stays a view until real query cost justifies otherwise. Both models live in their own `GROCERY_STAGING_WALMART`/`GROCERY_INTERMEDIATE_WALMART` schemas (see the Snowflake section above). Walmart's raw catalog is a flat table (no nested JSON like Kroger's locations/product-snapshot payloads), so there's no Layer 2/3 unnest fan-out the way Kroger has — one staging view is the complete mirror. Deliberately out of scope for this first pass: an `int_walmart_unpriced_history` companion (Kroger has one; Walmart has real NULL rates worth tracking — ~57% of rows have NULL `MSRP`, ~16% NULL `SALE_PRICE` — but this wasn't asked for yet) and a marts layer.
+
+**Materialization strategy** (revisited 2026-08-16 after a real cost review — don't just default everything to `view` again): staging/intermediate default to `view` in `dbt_project.yml`, which is right for cheap thin-rename/JSON-flatten models nobody hits repeatedly. Three models were promoted off that default after `QUERY_HISTORY`/`WAREHOUSE_METERING_HISTORY` showed real recurring cost — as views, `int_kroger_price_history` was queried 49x/7days at ~1.85s and ~580MB scanned *per query* (full window-function re-run over the entire price history every time), `int_kroger_unpriced_history` 12x/7days similarly:
+  - `int_kroger_price_history`, `int_kroger_unpriced_history` → `materialized='table'`. Full rebuild is currently only ~3s each (cheap at current data volume — revisit incremental only if that grows past tens of seconds; a correct incremental version needs `MERGE`-based upsert logic since the window functions look at each product+location's whole history, not just new rows — nontrivial, don't rush it).
+  - `stg_json_kroger_product_snapshot_items` → `materialized='incremental'` (default `append` strategy, filtered on `WHERE COLLECTED_AT > (SELECT MAX(COLLECTED_AT) FROM {{ this }})`). This one's a pure per-row flatten with no cross-row logic, so incremental was safe and simple — dropped a full rebuild from 24.3s to 2.1s once there was nothing new to load. Confirmed 598MB total storage across the whole project (Snowflake storage is effectively free at this scale) makes storage a non-issue next to the compute these three saved.
+  - **Operational consequence**: none of these three auto-refresh on query anymore. Run `dbt run` (or target these specifically) after every new Kroger collection run, or `int_kroger_price_history`/the Streamlit app will show stale data. This project has no scheduler (see Phase 3 status) — that `dbt run` step is still manual, same as the collection scripts themselves.
+
+**Pricing and inventory are merged into one model family.** `Kroger_Pricing_*.py` and `Kroger_Inventory_*.py` call the identical Kroger endpoint and land the identical raw response — the two RAW tables differ only in which script collected each row. `stg_kroger_product_snapshot` is a `UNION ALL` of both, tagged with `SOURCE_PIPELINE` ('pricing'/'inventory') so provenance isn't lost; everything downstream (`stg_json_kroger_product_snapshot` and its 10 array fan-outs) is built once instead of twice. This cut the staging layer from 28 models to 16 — see "Pricing and inventory are one model family, not two" in `Project Architecture.md` for the full reasoning.
+
+**dbt gotchas** (confirmed this session):
+- **dbt Fusion's CLI wants `--project-dir` *after* the subcommand** (`dbt run --project-dir X`), not before (`dbt --project-dir X run` errors with "No such option"). This is why `dbtg` is a shell function, not a plain alias.
+- **`generate_base_model()` from dbt-codegen has a real bug**, reproduced in isolation: for `stg_kroger_product_catalog` specifically, it appended 3 phantom columns (`region`, `locationId`, `raw_data`) that belong to a *different* source table. Confirmed via `DESCRIBE TABLE` that the live table doesn't have them. Fixed by hand-writing that one model instead of trusting the macro; the other three sources generated correctly.
+- **`INFER_SCHEMA` inferred `productId`/`upc` as `NUMBER`**, silently dropping their meaningful leading zeros in every row of `KROGER_PRODUCT_CATALOG`. Fixed by overriding just those two columns' inferred type to `VARCHAR` via `OBJECT_INSERT` on the `INFER_SCHEMA` output before `CREATE TABLE ... USING TEMPLATE`, then reloading from S3 (source CSVs were never affected, so nothing was actually lost).
+- **Snowflake's `INFER_SCHEMA`-derived tables use case-sensitive quoted identifiers** (e.g. `"productId"`, not `PRODUCTID`) — reference them with matching double-quotes in dbt SQL, or they silently fail to resolve (Snowflake folds unquoted identifiers to uppercase).
+- **Arrays vs. objects need fundamentally different handling.** A fixed-shape nested object (e.g. `address`, `temperature`) can be flattened into more columns on the *same* row/grain. A JSON array (e.g. `items`, `nutrition_information`) cannot — it needs its own model at a new grain (`LATERAL FLATTEN`, one row per array element). Two fields (`images`, `nutrition_information`) needed a *second* fan-out for their own nested sub-arrays. Always confirm real type via `TYPEOF()`/live data before assuming — don't guess from one sample.
+- **`RESTRICTIONS` (product snapshot) is an empty array on every row today** — confirmed via live query, not assumed. Its fan-out model exists and will start returning rows the moment Kroger populates it; don't be alarmed by 0 rows.
+- **Never add a `unique` dbt test on `PRODUCT_ID`/`LOCATION_ID` alone** — these are append-only raw snapshots (multiple collection runs accumulate), so single-column uniqueness doesn't hold even though it might look like it should. `not_null` is safe and already verified against live data.
+- **Fusion requires `loaded_at_field`/`freshness` nested under a `config:` block** in `sources.yml`, unlike older dbt-core docs that show them as siblings of `name`/`description`. Top-level placement parses but is silently ignored (`UnusedConfigKey`, dbt1060) — no runtime error, just a config that quietly does nothing.
+- **`kroger_product_catalog`'s `loaded_at_field` needs an explicitly-quoted identifier** (`'"collected_at"'` in the YAML, embedded double-quotes) — same `INFER_SCHEMA` case-sensitivity gotcha as above, but freshness-check SQL doesn't go through the model's own quoted-column SQL, so it needs its own quoting. The other three sources (unquoted-uppercase tables) just use bare `collected_at`.
+
+---
+
+## Snowflake gotchas (all confirmed against the real account — don't re-derive)
+
+- **Storage integrations are account-level** — `CREATE STORAGE INTEGRATION` names must be unqualified, unlike stages/tables/pipes.
+- **Never `CREATE OR REPLACE STORAGE INTEGRATION`** once working — generates a new `STORAGE_AWS_EXTERNAL_ID` and desyncs the AWS IAM role's trust policy. Use `IF NOT EXISTS`.
+- **`MATCH_BY_COLUMN_NAME` + extra table columns** (e.g. `INGESTED_FILENAME`) needs `ERROR_ON_COLUMN_COUNT_MISMATCH = FALSE` on the file format, or `COPY INTO` fails on raw column count despite name-based matching.
+- **`INCLUDE_METADATA = (col = METADATA$FILENAME)`** is required to combine file-metadata columns with `MATCH_BY_COLUMN_NAME`.
+- **`CREATE OR REPLACE TABLE` drops manually-`ALTER`-added columns.** Re-run the `ALTER TABLE ADD COLUMN` immediately after, every time.
+- **A pipe's "already loaded" tracking survives table recreation** — use `COPY INTO ... FORCE = TRUE` to force a reload.
+- **`FIELD_OPTIONALLY_ENCLOSED_BY = '"'`** required on file formats reading pandas CSVs, or quoted commas get split.
+- **One SQS queue per *storage integration*, not per stage or per pipe** — confirmed live 2026-08-31: Kroger's four pipes and Walmart's pipe all share one `notification_channel` despite reading different stages, because all their stages use the same `GROCERY_PRICE_PROJECT` storage integration. (Earlier versions of this doc guessed "per stage" based on only the four same-stage Kroger pipes agreeing with each other — that was consistent with either theory until Walmart's differently-stage'd pipe came back with the identical ARN.) Each source still needs its own S3 Event Notification entry on the bucket (prefix-scoped) pointed at that one shared ARN — `aws s3api put-bucket-notification-configuration` replaces the whole config, so always GET current state and merge, never PUT a partial one. Each pipe's own `PATTERN` decides what it actually loads from messages it receives.
+- **First-time S3 notification config changes can have real propagation delay** — confirmed 2026-08-31 wiring Walmart's entry: two fresh-upload tests over ~25 minutes showed zero auto-trigger (verified the pipe/table/pattern were otherwise correct via manual `ALTER PIPE ... REFRESH` in the meantime), then a third test auto-ingested in ~17 seconds. Not a permanent issue, but don't conclude "broken" from an early test window — and `ALTER PIPE ... REFRESH` is always a safe way to unblock a specific file while waiting.
+- **Every pipe reading a shared stage needs its own `PATTERN`** or it'll try to load every file type sharing that prefix.
+- **All four Kroger pipes silently broke on 2026-08-10** when the raw schema got renamed `RAW` → `GROCERY_RAW` (see the note above) — the pipes' `COPY INTO` targets weren't updated along with it, so every pipe sat in `STOPPED_MISSING_TABLE` (visible via `SELECT SYSTEM$PIPE_STATUS(...)`) for **6 days** with zero errors surfaced anywhere obvious — S3 events kept arriving and getting acknowledged, they just had nowhere to load. Discovered 2026-08-14 only because a Streamlit query showed stale/missing data. Fixed by `CREATE OR REPLACE PIPE` with the corrected target schema for all four (`KROGER_PRICING_PIPE`, `KROGER_INVENTORY_PIPE`, `KROGER_LOCATIONS_PIPE`, `KROGER_PRODUCT_CATALOG_PIPE`), then `ALTER PIPE ... REFRESH` (no `PREFIX` — a prefix-scoped refresh missed files once, a bare refresh caught everything) to backfill the backlog. Recreating the pipe kept the same SQS ARN, so no AWS-side S3 event notification update was needed — **but don't assume that always holds**, check `SHOW PIPES`' `notification_channel` before/after any pipe recreation. **Lesson**: after any schema rename, `SHOW PIPES` + `SYSTEM$PIPE_STATUS` on every pipe targeting that schema, not just the sources.yml/dbt side.
+- **Applied that lesson on 2026-09-01's GROCERY_RAW → GROCERY_RAW_KROGER/WALMART split**: `ALTER TABLE ... RENAME TO <new_schema>.<name>` is metadata-only and instant even on `KROGER_PRICING`'s 3.06M rows (never `CREATE TABLE AS SELECT` for a real-data table move — that actually copies every row and risks a window of duplication/loss). Every pipe touching a moved table was recreated (`CREATE OR REPLACE PIPE` in the new schema, then `DROP PIPE` the old one — pipes don't auto-follow a table rename), and `SHOW PIPES` + `SYSTEM$PIPE_STATUS` were checked on all 6 immediately after — all `RUNNING`, all sharing the same `notification_channel` ARN as before, zero bucket-side S3 Event Notification changes needed since stage `URL`s (the S3 prefixes) didn't change, only their owning schema.
+
+---
+
+## Security
+
+`.env` and `credentials/` are gitignored (verify `.gitignore` still has them — it didn't exist at all until 2026-08-10, despite earlier docs claiming otherwise). Never commit `.env`, never hardcode credentials, never share private keys/passwords in messages.
 
 ---
 
 ## Phase Status
 
-### Phase 1: API Setup ✓ COMPLETE
-- [x] Kroger API credentials obtained
-- [x] Walmart RSA key pair generated
-- [x] Public key uploaded to Walmart
-- [x] Walmart application created
-- [x] Documentation created
-
-### Phase 2: Snowflake Setup (NEXT)
-- [ ] Snowflake warehouse created
-- [ ] Raw data tables designed
-- [ ] External stages configured
-- [ ] Data retention policies defined
-
-### Phase 3: Data Ingestion Pipeline (PLANNED)
-- [ ] Python scripts for API polling
-- [ ] Scheduled data collection
-- [ ] Data validation
-- [ ] Pipeline monitoring
-
-### Phase 4: dbt Transformation (PLANNED)
-- [ ] dbt models designed
-- [ ] Raw → clean data transformations
-- [ ] Price history tables
-- [ ] Fact tables for analysis
-
-### Phase 5: Analysis & Forecasting (PLANNED)
-- [ ] Exploratory data analysis
-- [ ] Sale pattern identification
-- [ ] Forecasting models
-- [ ] Dashboards
-
----
-
-## Important Notes
-
-### Security
-⚠️ **CRITICAL**: 
-- Never commit `credentials/` directory to git
-- Never commit `.env` file
-- `.env` and `credentials/` are in `.gitignore`
-- Private keys are local-only; never share them
-
-### API Rate Limits
-- **Kroger**: 10,000 calls/day across all endpoints
-- **Walmart**: Check dashboard (varies by tier)
-- Plan data collection schedule accordingly
-
-### Data Schema Planning
-When designing Snowflake tables, capture:
-- Product IDs (Kroger UPC, Walmart item ID)
-- Regular price
-- Promotional price
-- Stock levels
-- Store location
-- Timestamp (when data was collected)
-- Fulfillment options (Walmart)
-
----
-
-## Quick Start Commands
-
-```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Test API credentials
-python scripts/test_api_credentials.py
-
-# Load environment variables
-source .env
-
-# Run dbt transformations
-cd dbt && dbt run
-
-# Test a specific dbt model
-cd dbt && dbt run --select model_name
-```
-
----
-
-## Common Tasks
-
-### Add a new Kroger store location
-1. Update `scripts/store_configs.py`
-2. Test with `test_api_credentials.py`
-3. Add to dbt staging model
-
-### Change data collection frequency
-1. Update `scripts/ingest_*.py` schedule
-2. Test locally first
-3. Update deployment configs
-
-### Add a new price metric
-1. Update API response parsing
-2. Add column to Snowflake staging table
-3. Create dbt transformation
-4. Update downstream models
-
----
-
-## Documentation Reference
-
-See project documentation for:
-- `WALMART_API_KEY_SETUP.md` - How the RSA key pair was created
-- `walmart_apis_overview.md` - Walmart API options and comparison
-- `kroger_api_openapi.json` - Complete Kroger API specification
-- `WALMART_APPLICATION_SETUP_COMPLETE.md` - Setup completion checklist
-
----
-
-## When Using Claude Code in VSCode
-
-1. Open the project folder in VSCode
-2. Claude Code will read this `.claude/instructions.md` file
-3. All context about your project is available
-4. You can reference phase status, credentials locations, API docs, etc.
-
----
-
-## Questions?
-
-If Claude Code asks clarifying questions:
-- Refer to the "Project Overview" section
-- Check the "Phase Status" to see what's been completed
-- Reference the appropriate documentation file for details
-
----
-
-**Last Updated**: 2026-08-09  
-**Project Owner**: Jamaal Smith
+- **Phase 1** (API setup): ✅ done.
+- **Phase 2** (Snowflake): 🟡 warehouse/tables/stages done; retention policy not defined.
+- **Phase 3** (Ingestion): 🟡 Kroger catalog/locations/pricing all working + auto-ingesting (Inventory retired, see above); Walmart ingestion script working as of 2026-08-31 (auth resolved, category-scoped to real Food department), Snowflake landing table/pipe built and verified, but no full production pull run yet. **Kroger has a real scheduler** as of 2026-08-23 — EventBridge Scheduler + Fargate, weekly (Friday 5pm ET full reset + run, Saturday 9am ET continuation), see `Orchestration/README.md`; proven end-to-end (live run succeeded, 45/81 stores). Walmart is being added as a second leg of that same Friday schedule as of 2026-08-31, alongside a new `JOB_PERFORMANCE.ORCHESTRATION_JOB_RUNS` table for per-run success/failure history. That pipeline supports one-off ad-hoc triggers too (an `at()` EventBridge Schedule with `ActionAfterCompletion: DELETE`, used 2026-08-23 for a manual reset-and-resweep outside the regular weekly cadence — a reusable pattern, not a one-time hack). `dbt run` after each collection is still manual — the schedule doesn't trigger it (see Materialization strategy above). No data quality checks yet. **Aldi and Publix were removed from the project entirely 2026-08-31** — Aldi's API host never resolved (D12) and no replacement was ever found; Publix was never live-verified. Neither is coming back without a fresh decision to rebuild from scratch.
+  - Kroger pricing checkpoint history: full 81-store backfill completed 2026-08-15 via the checkpointed, resumable `Kroger_Pricing_*.py` (tracks completed locations in an S3 JSON checkpoint since one run can't fit the full ~18K-call sweep inside Kroger's 10K/day budget). Reset and re-swept from scratch 2026-08-23 (manually triggered, `--reset-checkpoint`) to get current prices — check the checkpoint's actual completed-count before assuming it's caught up to a full 81/81 refresh at any given moment; the one-off Monday continuation trigger only fires once and self-deletes.
+- **Phase 4** (dbt): 🟡 Kroger staging layer done (16 models: catalog + 3-layer locations + 3-layer product_snapshot [merged pricing+inventory], all live-verified); intermediate layer done (price history + current-state models, see above); Walmart's first models landed 2026-09-12 (`stg_walmart_product_catalog`, `int_walmart_price_history`, see the dbt section above) — Walmart's staging/intermediate layers are otherwise not started beyond this; marts (joins + business logic, either source) not started.
+- **Phase 5** (Forecasting): 🔮 not started — depends on accumulating enough `KROGER_PRICING` history via a real schedule, not ad hoc runs.
