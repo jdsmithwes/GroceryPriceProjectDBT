@@ -1,0 +1,23 @@
+{
+  "Name": "grocery-ingest-friday-full",
+  "Description": "Weekly full reset + Kroger/Walmart sweep, Friday 5pm ET (see Orchestration/README.md)",
+  "ScheduleExpression": "cron(0 17 ? * FRI *)",
+  "ScheduleExpressionTimezone": "America/New_York",
+  "FlexibleTimeWindow": { "Mode": "OFF" },
+  "Target": {
+    "Arn": "arn:aws:ecs:us-east-1:573509103721:cluster/grocery-ingest-cluster",
+    "RoleArn": "arn:aws:iam::573509103721:role/GroceryIngestSchedulerRole",
+    "EcsParameters": {
+      "TaskDefinitionArn": "arn:aws:ecs:us-east-1:573509103721:task-definition/grocery-ingest:2",
+      "LaunchType": "FARGATE",
+      "NetworkConfiguration": {
+        "awsvpcConfiguration": {
+          "Subnets": ["subnet-0cd3649c064d976d7"],
+          "SecurityGroups": ["sg-0913e52b023b9f5b2"],
+          "AssignPublicIp": "ENABLED"
+        }
+      }
+    },
+    "Input": "{\"containerOverrides\":[{\"name\":\"grocery-ingest\",\"environment\":[{\"name\":\"RUN_MODE\",\"value\":\"friday_full\"}]}]}"
+  }
+}

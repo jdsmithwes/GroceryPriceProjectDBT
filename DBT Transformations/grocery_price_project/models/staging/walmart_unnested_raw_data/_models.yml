@@ -1,0 +1,78 @@
+version: 2
+
+groups:
+  - name: walmart
+    owner:
+      name: Jamaal Smith
+      email: jdsmithwes@protonmail.com
+
+models:
+  # ============================================================
+  # Layer 1 — thin rename over the RAW source, same grain as RAW.
+  # Walmart's raw catalog is a flat table (no nested JSON like
+  # Kroger's locations/product-snapshot payloads), so one staging
+  # view is the full mirror of Kroger's stg_kroger_product_catalog —
+  # there's no unnesting layer to build on top of it.
+  # ============================================================
+
+  - name: stg_walmart_product_catalog
+    config:
+      materialized: view
+      group: walmart
+    description: >
+      The entire Walmart product catalog. Raw-landing convention applies:
+      append-only across collection runs, so the same ITEM_ID legitimately
+      reappears with a new COLLECTED_AT every time
+      entire_productcatalog_walmart.py is re-run — ITEM_ID alone is NOT
+      unique at this grain, only unique per collection run.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - ITEM_ID
+              - INGESTED_FILENAME
+    columns:
+      - name: ITEM_ID
+        description: "Walmart's unique item identifier ('itemId' in the Affiliate API). Kept as a string, matching this project's defensive convention for ID columns. Not unique alone at this grain — see model description."
+        data_tests:
+          - not_null
+      - name: PARENT_ITEM_ID
+        description: "Parent item id for variant grouping (e.g. size/flavor variants of the same product), 'parentItemId' in the API."
+      - name: UPC
+        description: "The product's UPC barcode, 'upc' in the API."
+      - name: NAME
+        description: "Product name, 'name' in the API."
+      - name: BRAND_NAME
+        description: "Brand name of the product, 'brandName' in the API."
+      - name: CATEGORY_PATH
+        description: "Product category path, 'categoryPath' in the API."
+      - name: CATEGORY_NODE
+        description: "Category node id, 'categoryNode' in the API — the category this catalog pull was scoped to."
+      - name: MSRP
+        description: "Manufacturer's suggested retail (list) price, cast to NUMBER(10,2) from the raw VARCHAR column, 'msrp' in the API. NULL for a substantial share of rows (~57% as of 2026-09-11) — see int_walmart_price_history for how unpriced rows are handled."
+      - name: SALE_PRICE
+        description: "Current Walmart selling price, cast to NUMBER(10,2) from the raw VARCHAR column, 'salePrice' in the API. NULL for ~16% of rows as of 2026-09-11."
+      - name: LONG_DESCRIPTION
+        description: "Full product description, 'longDescription' in the API."
+      - name: STOCK
+        description: "Stock status, 'stock' in the API."
+      - name: MARKETPLACE
+        description: "Whether this listing is a marketplace (third-party) item vs. sold directly by Walmart, 'marketplace' in the API."
+      - name: SELLER_INFO
+        description: "Seller name for marketplace items, 'sellerInfo' in the API."
+      - name: CUSTOMER_RATING
+        description: "Average customer rating, 'customerRating' in the API."
+      - name: NUM_REVIEWS
+        description: "Total number of customer reviews, 'numReviews' in the API."
+      - name: CLEARANCE
+        description: "Whether the item is marked clearance, 'clearance' in the API."
+      - name: MEDIUM_IMAGE
+        description: "URL to a medium-size product image, 'mediumImage' in the API."
+      - name: PRODUCT_TRACKING_URL
+        description: "Walmart affiliate tracking URL for the product, 'productTrackingUrl' in the API."
+      - name: COLLECTED_AT
+        description: "Timestamp the ingestion script pulled this record — added by the Python script, not part of Walmart's own response (raw-landing convention, see instructions.md)."
+        data_tests:
+          - not_null
+      - name: INGESTED_FILENAME
+        description: "The source S3 CSV filename this row was loaded from via Snowpipe, for tracing a row back to a specific collection run."

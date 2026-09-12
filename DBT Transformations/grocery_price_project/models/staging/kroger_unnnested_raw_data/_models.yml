@@ -1,0 +1,328 @@
+version: 2
+
+groups:
+  - name: kroger
+    owner:
+      name: Jamaal Smith
+      email: jdsmithwes@protonmail.com
+
+
+models:
+  # ============================================================
+  # Layer 1 — thin rename over the RAW source, same grain as RAW.
+  # (stg_kroger_locations/pricing/inventory are materialized as
+  # ephemeral — no physical Snowflake object, inlined into whatever
+  # refs them.)
+  # ============================================================
+
+  - name: stg_kroger_product_catalog
+    config:
+      materialized: view
+      group: kroger
+    description: >
+      The entire Kroger product catalog. Raw-landing convention applies:
+      append-only across collection runs, so the same PRODUCT_ID
+      legitimately reappears with a new COLLECTED_AT every time
+      entire_productcatalog_kroger.py is re-run — PRODUCT_ID alone is NOT
+      unique at this grain, only unique per collection run (the ingestion
+      script de-dupes within a single run before upload, keyed by
+      productId). See the model-level unique_combination_of_columns test.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - PRODUCT_ID
+              - INGESTED_FILENAME
+    columns:
+      - name: PRODUCT_ID
+        description: "Kroger's unique product identifier ('productId' in the API). Has meaningful leading zeros — always read/joined as a string, never a number (see instructions.md's Kroger gotcha). Not unique alone at this grain — see model description."
+        data_tests:
+          - not_null
+      - name: UPC
+        description: "The product's UPC barcode ('upc' in the API). Same leading-zero gotcha as PRODUCT_ID — kept as a string."
+      - name: BRAND
+        description: "Brand name of the product ('brand' in the API)."
+      - name: DESCRIPTION
+        description: "Product name/description ('description' in the API)."
+      - name: CATEGORIES
+        description: "Product category path(s), flattened to a string by the ingestion script at collection time (see entire_productcatalog_kroger.py) — unlike the pricing/inventory pipeline, the catalog script does its own flattening, so this column is not a JSON array."
+      - name: COUNTRY_ORIGIN
+        description: "Country of origin for the product ('countryOrigin' in the API)."
+      - name: TEMPERATURE
+        description: "Storage temperature indicator (e.g. ambient/refrigerated/frozen), 'temperature' in the API."
+      - name: SIZE
+        description: "Package size as reported by Kroger (e.g. '12 oz'), 'size' in the API."
+      - name: SOLD_BY
+        description: "Unit the product is sold by (e.g. each vs. weight), 'soldBy' in the API."
+      - name: IMAGE_URL
+        description: "URL to a product image, 'image_url' as flattened by the ingestion script."
+      - name: COLLECTED_AT
+        description: "Timestamp the ingestion script pulled this record — added by the Python script, not part of Kroger's own response (raw-landing convention, see instructions.md)."
+      - name: INGESTED_FILENAME
+        description: "The source S3 CSV filename this row was loaded from via Snowpipe, for tracing a row back to a specific collection run."
+
+  - name: stg_kroger_locations
+    config:
+      materialized: view
+      group: kroger
+    description: "Layer 1 thin rename over RAW.KROGER_LOCATIONS — pulls LOCATION_ID out of raw_data as a real join-key column; everything else about the location stays untouched JSON in RAW_DATA per the raw-landing convention (see instructions.md)."
+    columns:
+      - name: LOCATION_ID
+        description: "Kroger's unique store/location identifier — the join key used by stg_kroger_product_snapshot and every downstream model."
+        data_tests:
+          - not_null
+      - name: REGION
+        description: "The metro/region label the Location script searched under (e.g. Metro Atlanta) — not part of Kroger's own response, added by the ingestion script to track which region a collection run targeted."
+      - name: RAW_DATA
+        description: "Full, untouched Kroger Locations API response for this store, preserved as JSON text per the raw-landing convention: ingestion scripts pull out only join/partition keys as real columns, and leave everything else here for dbt to parse."
+      - name: COLLECTED_AT
+        description: "Timestamp the ingestion script pulled this record."
+      - name: INGESTED_FILENAME
+        description: "The source S3 CSV filename this row was loaded from via Snowpipe."
+
+  - name: stg_kroger_product_snapshot
+    config:
+      materialized: view
+      group: kroger
+    description: >
+      Union of RAW.KROGER_PRICING and RAW.KROGER_INVENTORY. Both pipelines
+      call the identical Kroger endpoint and land the identical raw
+      response (see the NOTE in Kroger_Pricing_*.py) — merged into one
+      model instead of two parallel ones; SOURCE_PIPELINE preserves which
+      pipeline collected each row.
+    columns:
+      - name: PRODUCT_ID
+        description: "Kroger product id, pulled out of raw_data as a real column so this model can join to stg_kroger_product_catalog. Same leading-zero gotcha as the catalog's PRODUCT_ID."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_kroger_product_catalog')
+                field: PRODUCT_ID
+      - name: LOCATION_ID
+        description: "Kroger location id, pulled out of raw_data as a real column so this model can join to stg_kroger_locations."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_kroger_locations')
+                field: LOCATION_ID
+      - name: RAW_DATA
+        description: "Full, untouched Kroger product JSON for this product+location pull — identical shape regardless of SOURCE_PIPELINE, since both scripts call the same endpoint (see model description above)."
+      - name: COLLECTED_AT
+        description: "Timestamp the collecting script (pricing or inventory) pulled this record."
+      - name: INGESTED_FILENAME
+        description: "The source S3 CSV filename this row was loaded from via Snowpipe."
+      - name: SOURCE_PIPELINE
+        description: "'pricing' or 'inventory' — which collection script produced this row."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['pricing', 'inventory']
+
+  # ============================================================
+  # Layer 2 — PARSE_JSON(RAW_DATA), top-level keys + fixed-shape
+  # nested objects flattened into columns. Same grain as Layer 1.
+  # Remaining array-typed columns (VARIANT) are fanned out into
+  # their own models one level up in models/staging/ — see
+  # Project Architecture.md for the full lineage/reasoning.
+  # ============================================================
+
+  - name: stg_json_kroger_locations
+    config:
+      materialized: view
+      group: kroger
+    description: "Layer 2: PARSE_JSON(RAW_DATA) from stg_kroger_locations, with top-level keys and the fixed-shape ADDRESS/GEOLOCATION/HOURS objects flattened into columns. Same grain as Layer 1 — one row per location. DEPARTMENTS is the only array field and is left as VARIANT, fanned out separately in stg_json_kroger_locations_departments."
+    columns:
+      - name: REGION
+        description: "Carried through unchanged from stg_kroger_locations."
+      - name: COLLECTED_AT
+        description: "Carried through unchanged from stg_kroger_locations."
+      - name: INGESTED_FILENAME
+        description: "Carried through unchanged from stg_kroger_locations."
+      - name: LOCATION_ID
+        description: "Carried through from stg_kroger_locations ('locationId' in the API); primary key for this model."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_kroger_locations')
+                field: LOCATION_ID
+      - name: STORE_NUMBER
+        description: "Kroger's internal store number ('storeNumber' in the API)."
+      - name: DIVISION_NUMBER
+        description: "Kroger's internal division number ('divisionNumber'), groups stores by operating division."
+      - name: CHAIN
+        description: "Store banner/chain name (e.g. Kroger, Ralphs), 'chain' in the API."
+      - name: NAME
+        description: "Store display name, 'name' in the API."
+      - name: PHONE
+        description: "Store phone number, 'phone' in the API."
+      - name: ADDRESS_LINE1
+        description: "Street address, 'address.addressLine1' in the API."
+      - name: CITY
+        description: "'address.city' in the API."
+      - name: STATE
+        description: "'address.state' in the API."
+      - name: ZIP_CODE
+        description: "'address.zipCode' in the API."
+      - name: COUNTY
+        description: "'address.county' in the API."
+      - name: LATITUDE
+        description: "'geolocation.latitude' in the API."
+      - name: LONGITUDE
+        description: "'geolocation.longitude' in the API."
+      - name: LAT_LNG
+        description: "Combined latitude/longitude string as returned directly by Kroger ('geolocation.latLng'), separate from the individual LATITUDE/LONGITUDE columns."
+      - name: HOURS_TIMEZONE
+        description: "Store hours timezone, 'hours.timezone' in the API."
+      - name: HOURS_GMT_OFFSET
+        description: "Store hours GMT offset, 'hours.gmtOffset' in the API."
+      - name: HOURS_OPEN24
+        description: "Whether the store is open 24 hours overall, 'hours.open24' in the API."
+      - name: MONDAY_OPEN
+        description: "Monday opening time, 'hours.monday.open' in the API."
+      - name: MONDAY_CLOSE
+        description: "Monday closing time, 'hours.monday.close' in the API."
+      - name: MONDAY_OPEN24
+        description: "Whether the store is open 24 hours on Monday, 'hours.monday.open24' in the API."
+      - name: TUESDAY_OPEN
+        description: "Tuesday opening time, 'hours.tuesday.open' in the API."
+      - name: TUESDAY_CLOSE
+        description: "Tuesday closing time, 'hours.tuesday.close' in the API."
+      - name: TUESDAY_OPEN24
+        description: "Whether the store is open 24 hours on Tuesday, 'hours.tuesday.open24' in the API."
+      - name: WEDNESDAY_OPEN
+        description: "Wednesday opening time, 'hours.wednesday.open' in the API."
+      - name: WEDNESDAY_CLOSE
+        description: "Wednesday closing time, 'hours.wednesday.close' in the API."
+      - name: WEDNESDAY_OPEN24
+        description: "Whether the store is open 24 hours on Wednesday, 'hours.wednesday.open24' in the API."
+      - name: THURSDAY_OPEN
+        description: "Thursday opening time, 'hours.thursday.open' in the API."
+      - name: THURSDAY_CLOSE
+        description: "Thursday closing time, 'hours.thursday.close' in the API."
+      - name: THURSDAY_OPEN24
+        description: "Whether the store is open 24 hours on Thursday, 'hours.thursday.open24' in the API."
+      - name: FRIDAY_OPEN
+        description: "Friday opening time, 'hours.friday.open' in the API."
+      - name: FRIDAY_CLOSE
+        description: "Friday closing time, 'hours.friday.close' in the API."
+      - name: FRIDAY_OPEN24
+        description: "Whether the store is open 24 hours on Friday, 'hours.friday.open24' in the API."
+      - name: SATURDAY_OPEN
+        description: "Saturday opening time, 'hours.saturday.open' in the API."
+      - name: SATURDAY_CLOSE
+        description: "Saturday closing time, 'hours.saturday.close' in the API."
+      - name: SATURDAY_OPEN24
+        description: "Whether the store is open 24 hours on Saturday, 'hours.saturday.open24' in the API."
+      - name: SUNDAY_OPEN
+        description: "Sunday opening time, 'hours.sunday.open' in the API."
+      - name: SUNDAY_CLOSE
+        description: "Sunday closing time, 'hours.sunday.close' in the API."
+      - name: SUNDAY_OPEN24
+        description: "Whether the store is open 24 hours on Sunday, 'hours.sunday.open24' in the API."
+      - name: DEPARTMENTS
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_locations_departments"
+
+  - name: stg_json_kroger_product_snapshot
+    config:
+      materialized: view
+      group: kroger
+    description: >
+      JSON-flattened version of stg_kroger_product_snapshot (the merged
+      pricing+inventory union) — same grain, one row per product+location
+      pull, SOURCE_PIPELINE carried through.
+    columns:
+      - name: LOCATION_ID
+        description: "Carried through from stg_kroger_product_snapshot — the store this product+location pull was scoped to. Not part of the product JSON itself (see model note in stg_kroger_product_snapshot)."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_kroger_locations')
+                field: LOCATION_ID
+      - name: SOURCE_PIPELINE
+        description: "'pricing' or 'inventory' — which collection script produced this row."
+      - name: COLLECTED_AT
+        description: "Carried through unchanged from stg_kroger_product_snapshot."
+      - name: INGESTED_FILENAME
+        description: "Carried through unchanged from stg_kroger_product_snapshot."
+      - name: PRODUCT_ID
+        description: "Kroger product id ('productId' in the API). Same leading-zero gotcha as elsewhere in this project — kept as a string."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_kroger_product_catalog')
+                field: PRODUCT_ID
+      - name: UPC
+        description: "The product's UPC barcode, 'upc' in the API."
+      - name: PRODUCT_PAGE_URI
+        description: "Relative URI to the product's page on kroger.com, 'productPageURI' in the API."
+      - name: BRAND
+        description: "Brand name of the product, 'brand' in the API."
+      - name: COUNTRY_ORIGIN
+        description: "Country of origin for the product, 'countryOrigin' in the API."
+      - name: DESCRIPTION
+        description: "Product name/description, 'description' in the API."
+      - name: SNAP_ELIGIBLE
+        description: "Whether the product is SNAP/EBT eligible, 'snapEligible' in the API."
+      - name: ALLERGENS_DESCRIPTION
+        description: "Free-text allergen summary, 'allergensDescription' in the API (see also the ALLERGENS array fan-out for structured per-allergen data)."
+      - name: ORGANIC_CLAIM_NAME
+        description: "Organic claim label if any, 'organicClaimName' in the API."
+      - name: NON_GMO
+        description: "Whether the product carries a Non-GMO claim, 'nonGmo' in the API."
+      - name: NON_GMO_CLAIM_NAME
+        description: "Non-GMO claim label if any, 'nonGmoClaimName' in the API."
+      - name: HYPOALLERGENIC
+        description: "Whether the product is labeled hypoallergenic, 'hypoallergenic' in the API."
+      - name: CERTIFIED_FOR_PASSOVER
+        description: "Whether the product is certified for Passover, 'certifiedForPassover' in the API."
+      - name: RECEIPT_DESCRIPTION
+        description: "Short description as it would appear on a receipt, 'receiptDescription' in the API."
+      - name: WARNINGS
+        description: "Free-text product warnings, 'warnings' in the API."
+      - name: AGE_RESTRICTION
+        description: "Whether the product has an age restriction (e.g. alcohol/tobacco), 'ageRestriction' in the API — a plain boolean, confirmed via TYPEOF() against live data (not a nested object, despite the name)."
+      - name: ITEM_DEPTH
+        description: "Package depth, 'itemInformation.depth' in the API."
+      - name: ITEM_HEIGHT
+        description: "Package height, 'itemInformation.height' in the API."
+      - name: ITEM_WIDTH
+        description: "Package width, 'itemInformation.width' in the API."
+      - name: ITEM_GROSS_WEIGHT
+        description: "Package gross weight, 'itemInformation.grossWeight' in the API."
+      - name: ITEM_NET_WEIGHT
+        description: "Package net weight, 'itemInformation.netWeight' in the API."
+      - name: ITEM_AVERAGE_WEIGHT_PER_UNIT
+        description: "Average weight per unit for variable-weight items, 'itemInformation.averageWeightPerUnit' in the API."
+      - name: AVERAGE_OVERALL_RATING
+        description: "Average customer rating, 'ratingsAndReviews.averageOverallRating' in the API."
+      - name: TOTAL_REVIEW_COUNT
+        description: "Total number of customer reviews, 'ratingsAndReviews.totalReviewCount' in the API."
+      - name: TEMPERATURE_INDICATOR
+        description: "Storage temperature indicator (e.g. ambient/refrigerated/frozen), 'temperature.indicator' in the API."
+      - name: TEMPERATURE_HEAT_SENSITIVE
+        description: "Whether the product is heat-sensitive, 'temperature.heatSensitive' in the API."
+      - name: CATEGORIES
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_product_snapshot_categories"
+      - name: AISLE_LOCATIONS
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_product_snapshot_aisle_locations"
+      - name: ALIAS_PRODUCT_IDS
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_product_snapshot_alias_product_ids"
+      - name: ALLERGENS
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_product_snapshot_allergens"
+      - name: IMAGES
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_product_snapshot_images"
+      - name: ITEMS
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_product_snapshot_items (the actual price/inventory data)"
+      - name: MANUFACTURER_DECLARATIONS
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_product_snapshot_manufacturer_declarations"
+      - name: NUTRITION_INFORMATION
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_product_snapshot_nutrition_information"
+      - name: RESTRICTIONS
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_product_snapshot_restrictions; empty on every row as of this writing"
+      - name: SWEETENING_METHODS
+        description: "VARIANT (array) — fanned out separately in stg_json_kroger_product_snapshot_sweetening_methods"

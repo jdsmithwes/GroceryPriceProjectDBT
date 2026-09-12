@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "**/DBT Transformations/grocery_price_project/**/*.sql": "jinja-sql"
+    },
+    "dbt.profileName": "grocery_price_project"
+}
