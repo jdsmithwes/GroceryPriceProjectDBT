@@ -1,0 +1,37 @@
+version: 2
+
+seeds:
+  - name: retailer_category_crosswalk
+    description: >
+      Hand-curated mapping of each retailer's own category labels onto one
+      retailer-neutral COMMON_CATEGORY, using Kroger's department names as
+      the shared vocabulary. Kroger rows map a flat category. Walmart rows
+      map the category level of CATEGORY_PATH ("Home Page/Food/<category>/
+      <subcategory>"); a row with SOURCE_SUBCATEGORY set overrides the
+      category-level default for that subcategory. Matching is
+      case-insensitive. A blank COMMON_CATEGORY deliberately excludes the
+      label (non-grocery or merchandising buckets, e.g. Flower Shop, or
+      Kroger's "Natural & Organic" attribute tag).
+    config:
+      column_types:
+        RETAILER: varchar
+        SOURCE_CATEGORY: varchar
+        SOURCE_SUBCATEGORY: varchar
+        COMMON_CATEGORY: varchar
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - RETAILER
+              - SOURCE_CATEGORY
+              - SOURCE_SUBCATEGORY
+    columns:
+      - name: RETAILER
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['kroger', 'walmart']
+      - name: SOURCE_CATEGORY
+        data_tests:
+          - not_null

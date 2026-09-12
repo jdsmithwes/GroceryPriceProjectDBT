@@ -1,0 +1,74 @@
+RETAILER,SOURCE_CATEGORY,SOURCE_SUBCATEGORY,COMMON_CATEGORY
+kroger,Adult Beverage,,Adult Beverage
+kroger,Apparel,,Apparel
+kroger,Baby,,Baby
+kroger,Bakery,,Bakery
+kroger,Baking Goods,,Baking Goods
+kroger,Beauty,,Beauty
+kroger,Bed & Bath,,Bed & Bath
+kroger,Beverages,,Beverages
+kroger,Breakfast,,Breakfast
+kroger,Candy,,Candy
+kroger,Canned & Packaged,,Canned & Packaged
+kroger,Cleaning Products,,Cleaning Products
+kroger,Condiment & Sauces,,Condiment & Sauces
+kroger,Dairy,,Dairy
+kroger,Deli,,Deli
+kroger,Frozen,,Frozen
+kroger,Health,,Health
+kroger,International,,International
+kroger,Kitchen,,Kitchen
+kroger,Meat & Seafood,,Meat & Seafood
+kroger,Natural & Organic,,
+kroger,Party,,Party
+kroger,"Pasta, Sauces, Grain",,"Pasta, Sauces, Grain"
+kroger,Personal Care,,Personal Care
+kroger,Pet Care,,Pet Care
+kroger,Produce,,Produce
+kroger,Snacks,,Snacks
+kroger,Sporting Goods,,Sporting Goods
+walmart,Alcohol,,Adult Beverage
+walmart,Bakery & Bread,,Bakery
+walmart,Baking,,Baking Goods
+walmart,Beverages,,Beverages
+walmart,Beverages,"Beer, Wine & Spirits",Adult Beverage
+walmart,Breakfast & Cereal,,Breakfast
+walmart,Candy,,Candy
+walmart,Candy & Gum,,Candy
+walmart,Coffee,,Beverages
+walmart,Coffee,Coffee Creamers,Dairy
+walmart,Coffee,Coffee Filters,Kitchen
+walmart,"Condiments, Sauces & Spices",,Condiment & Sauces
+walmart,Dairy & Eggs,,Dairy
+walmart,Deli,,Deli
+walmart,Dietary & Lifestyle Shop,,
+walmart,Flower Shop,,
+walmart,Food Gifts,,
+walmart,Food Gifts & Flowers Shop,,
+walmart,Fresh Food,,
+walmart,Fresh Food,"Dairy, Eggs & Cheese",Dairy
+walmart,Fresh Produce,,Produce
+walmart,From Our Brands,,
+walmart,From Our Brands,From our brands bakery,Bakery
+walmart,Frozen Foods,,Frozen
+walmart,International Food,,International
+walmart,"Meal Solutions, Grains & Pasta",,"Pasta, Sauces, Grain"
+walmart,Meat & Seafood,,Meat & Seafood
+walmart,Pantry,,Canned & Packaged
+walmart,Pantry,Condiments,Condiment & Sauces
+walmart,Pantry,Sauces & marinades,Condiment & Sauces
+walmart,Pantry,Salad dressings & toppings,Condiment & Sauces
+walmart,Pantry,Pasta & pizza,"Pasta, Sauces, Grain"
+walmart,Pantry,"Rice, grains & dried beans","Pasta, Sauces, Grain"
+walmart,Pantry,Stir fry rice and noodles,"Pasta, Sauces, Grain"
+walmart,Pantry,Lasagna,"Pasta, Sauces, Grain"
+walmart,Pantry,"Herbs, spices & seasoning mixes",Baking Goods
+walmart,Pantry,Cooking oils & vinegar,Baking Goods
+walmart,Pantry,Honey,Baking Goods
+walmart,Pantry,International foods,International
+walmart,Seasonal Grocery,,
+walmart,Shop All Bread and Bakery,,Bakery
+walmart,Shop All Meat and Seafood,,Meat & Seafood
+walmart,Shop All Pantry,,Canned & Packaged
+walmart,Shop All Produce,,Produce
+walmart,"Snacks, Cookies & Chips",,Snacks
