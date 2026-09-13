@@ -187,7 +187,17 @@ def load_known_product_ids(bucket: str, prefix: str) -> list[str]:
     # zeros (e.g. "0001111041700") that pandas silently strips if it
     # infers the column as numeric.
     df = pd.read_csv(io.BytesIO(obj["Body"].read()), dtype=str)
-    return df["productId"].dropna().unique().tolist()
+    product_ids = set(df["productId"].dropna())
+
+    # Products found by Product Matching/kroger_walmart_upc_match.py (carried by both Kroger and Walmart).
+    match_response = s3.list_objects_v2(Bucket=bucket, Prefix=f"{prefix}upc_match/kroger_product_catalog_upc_match_")
+    match_keys = [obj["Key"] for obj in match_response.get("Contents", []) if obj["Key"].endswith(".csv")]
+    for key in match_keys:
+        match_df = pd.read_csv(io.BytesIO(s3.get_object(Bucket=bucket, Key=key)["Body"].read()), dtype=str)
+        product_ids.update(match_df["productId"].dropna())
+    logger.info("%s product IDs (%s UPC-match files included)", len(product_ids), len(match_keys))
+
+    return sorted(product_ids)
 
 
 def chunked(items: list[str], size: int) -> list[list[str]]:

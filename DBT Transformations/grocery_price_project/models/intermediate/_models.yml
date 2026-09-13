@@ -220,3 +220,44 @@ models:
                 values: ['mapped', 'excluded']
               config:
                 severity: warn
+
+  - name: int_retailer_common_upcs
+    description: >
+      One row per UPC carried by both Kroger and Walmart. Kroger's PRODUCT_ID is
+      the UPC without its check digit, zero-padded to 13 digits, so it matches the
+      first 11 digits of Walmart's 12-digit UPC-A. Carries both retailers' ids,
+      names, common categories, and current-price flags. LOOKUP_PRIORITY ranks
+      products for external product-detail lookups (upcdatabase.org): priced at
+      both retailers first, then round-robin across Walmart common categories.
+    columns:
+      - name: UPC_A
+        description: "12-digit UPC-A including check digit (Walmart's UPC)."
+        data_tests:
+          - not_null
+          - unique
+      - name: EAN_13
+        description: "UPC_A with a leading zero — the 13-digit GTIN form some barcode APIs expect."
+      - name: KROGER_PRODUCT_ID
+        description: "Kroger PRODUCT_ID (join to int_kroger_* models)."
+        data_tests:
+          - not_null
+          - unique
+      - name: WALMART_ITEM_ID
+        description: "Walmart ITEM_ID (join to stg_walmart_product_catalog / int_walmart_price_history). If several Walmart items share a UPC, a priced one is chosen."
+        data_tests:
+          - not_null
+      - name: IS_SAME_COMMON_CATEGORY
+        description: "TRUE when the crosswalk puts both retailers' versions of this identical product in the same COMMON_CATEGORY. FALSE rows are evidence for refining retailer_category_crosswalk."
+      - name: IS_CHECK_DIGIT_VALID
+        description: "TRUE when UPC_A's 12th digit matches the computed UPC-A check digit."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [true]
+              config:
+                severity: warn
+      - name: LOOKUP_PRIORITY
+        description: "1 = look up first."
+        data_tests:
+          - not_null
+          - unique
