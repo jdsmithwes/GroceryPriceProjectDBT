@@ -1,6 +1,6 @@
 -- =====================================================================
 -- UPC DATABASE — Snowpipe ingestion for
--- API Scripts/UPC Database Scripts/upcdatabase_product_details.py output
+-- API Scripts/UPC Product Info Scripts/upcdatabase_product_details.py output
 -- (s3://grocerydbtprojectrawdata/upc/upcdatabase_product_details_*.csv).
 --
 -- Same raw-landing convention as Kroger pricing: UPC plus the matching
