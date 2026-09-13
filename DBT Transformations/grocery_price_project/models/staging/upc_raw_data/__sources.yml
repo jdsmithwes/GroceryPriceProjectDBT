@@ -1,0 +1,14 @@
+version: 2
+
+sources:
+  - name: upc
+    database: GROCERYDBTPROJECT
+    schema: GROCERY_RAW_UPC
+    description: Raw product-detail lookups from the upcdatabase.org API for UPCs carried by both Kroger and Walmart.
+    tables:
+      - name: upcdatabase_product_details
+        description: >
+          One row per lookup attempt from upcdatabase_product_details.py. UPC,
+          the matching Kroger/Walmart ids, lookup status, and COLLECTED_AT are
+          real columns; RAW_DATA is the untouched API response body. A UPC can
+          appear more than once if it's looked up again later.
