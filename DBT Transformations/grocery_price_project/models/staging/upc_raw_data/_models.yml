@@ -1,0 +1,39 @@
+version: 2
+
+models:
+  - name: stg_upcdatabase_product_details
+    description: >
+      Parsed upcdatabase.org product details, same grain as the raw table (one
+      row per lookup attempt). Filter LOOKUP_STATUS = 'found' for products with
+      details. Join to int_retailer_common_upcs on UPC = UPC_A, or to each
+      retailer on KROGER_PRODUCT_ID / WALMART_ITEM_ID. Nutrition values come
+      from Open Food Facts-style keys in METANUTRITION and are often missing.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - UPC
+              - COLLECTED_AT
+    columns:
+      - name: UPC
+        description: "12-digit UPC-A that was looked up (int_retailer_common_upcs.UPC_A)."
+        data_tests:
+          - not_null
+      - name: KROGER_PRODUCT_ID
+        data_tests:
+          - not_null
+      - name: WALMART_ITEM_ID
+        data_tests:
+          - not_null
+      - name: LOOKUP_STATUS
+        description: "'found', 'not_found', or 'error' (errors are retried on the next run)."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['found', 'not_found', 'error']
+      - name: BARCODE
+        description: "Barcode as returned by upcdatabase.org — 13-digit EAN form of UPC."
+      - name: UPCDB_CATEGORIES
+        description: "Comma-separated categories from upcdatabase.org's own taxonomy (not the Kroger/Walmart crosswalk)."
+      - name: METANUTRITION
+        description: "Full nutrition object as VARIANT; the *_100G columns pull out the common per-100g values."
