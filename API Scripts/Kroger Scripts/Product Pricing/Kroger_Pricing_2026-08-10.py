@@ -189,7 +189,7 @@ def load_known_product_ids(bucket: str, prefix: str) -> list[str]:
     df = pd.read_csv(io.BytesIO(obj["Body"].read()), dtype=str)
     product_ids = set(df["productId"].dropna())
 
-    # Products found by Product Matching/kroger_walmart_upc_match.py (carried by both Kroger and Walmart).
+    # Products found by API Scripts/UPC Product Info Scripts/kroger_walmart_upc_match.py (carried by both Kroger and Walmart).
     match_response = s3.list_objects_v2(Bucket=bucket, Prefix=f"{prefix}upc_match/kroger_product_catalog_upc_match_")
     match_keys = [obj["Key"] for obj in match_response.get("Contents", []) if obj["Key"].endswith(".csv")]
     for key in match_keys:
