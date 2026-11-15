@@ -162,18 +162,53 @@ def call_proc(name: str, *args) -> dict:
     return json.loads(raw) if isinstance(raw, str) else raw
 
 
-def ask_agent(messages: list[dict]) -> tuple[str, list[str]]:
-    """Call the Cortex Agent and return (answer text, tools used)."""
-    if _snowflake is None:
-        return "Chat is only available when this app runs inside Snowflake.", []
-    resp = _snowflake.send_snow_api_request(
-        "POST", f"/api/v2/databases/{DB}/schemas/GROCERY_SEMANTIC/agents/{AGENT}:run",
-        {}, {}, {"messages": messages}, None, 180000,
-    )
-    if resp.get("status") != 200:
-        return f"The agent returned an error ({resp.get('status')}): {str(resp.get('content'))[:500]}", []
+def _text_from_json(obj) -> tuple[str, list[str]]:
+    """Non-streaming agent response: {"content": [{"type": "text", ...}, {"type": "tool_use", ...}]}
+    or a list of such messages."""
+    texts, tools = [], []
+    items = obj if isinstance(obj, list) else [obj]
+    # a serialized event stream: [{"event": "response.text.delta", "data": {...}}, ...]
+    if items and all(isinstance(it, dict) and "event" in it for it in items):
+        deltas, fulls = [], []
+        for it in items:
+            ev, data = it.get("event"), it.get("data") or {}
+            if isinstance(data, str):
+                try:
+                    data = json.loads(data)
+                except ValueError:
+                    data = {}
+            if ev == "response.text.delta":
+                deltas.append(data.get("text", ""))
+            elif ev == "response.text":
+                fulls.append(data.get("text", ""))
+            elif ev and str(ev).startswith("response.tool_use"):
+                name = data.get("name") or data.get("tool_name")
+                if name and name not in tools:
+                    tools.append(name)
+        return ("".join(deltas).strip() or "".join(fulls).strip()), tools
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        content = it.get("content")
+        if isinstance(content, str):
+            texts.append(content)
+        for c in content if isinstance(content, list) else []:
+            if not isinstance(c, dict):
+                continue
+            if c.get("type") == "text" and c.get("text"):
+                texts.append(c["text"])
+            elif c.get("type") == "tool_use":
+                name = (c.get("tool_use") or {}).get("name") or c.get("name")
+                if name and name not in tools:
+                    tools.append(name)
+        if it.get("type") == "text" and it.get("text"):
+            texts.append(it["text"])
+    return "\n".join(texts).strip(), tools
+
+
+def _text_from_sse(body: str) -> tuple[str, list[str]]:
     deltas, fulls, tools, event = [], [], [], None  # text arrives as deltas AND a final full copy
-    for raw in str(resp.get("content", "")).splitlines():
+    for raw in body.splitlines():
         if raw.startswith("event:"):
             event = raw[6:].strip()
         elif raw.startswith("data:"):
@@ -192,8 +227,59 @@ def ask_agent(messages: list[dict]) -> tuple[str, list[str]]:
                 name = data.get("name") or data.get("tool_name")
                 if name and name not in tools:
                     tools.append(name)
-    text = "".join(deltas).strip() or "".join(fulls).strip()
-    return text or "The agent returned no text.", tools
+            elif event is None and isinstance(data, dict):
+                # some proxies drop the event lines; fall back on payload shape
+                if data.get("type") == "text" and data.get("text"):
+                    deltas.append(data["text"])
+                elif "delta" in data:
+                    for c in (data["delta"] or {}).get("content", []) or []:
+                        if c.get("type") == "text":
+                            deltas.append(c.get("text", ""))
+    return ("".join(deltas).strip() or "".join(fulls).strip()), tools
+
+
+def ask_agent(messages: list[dict]) -> tuple[str, list[str]]:
+    """Call the Cortex Agent and return (answer text, tools used). Handles both
+    the event-stream and the plain-JSON response shapes; shows the raw
+    response when neither yields text so the cause is visible in the UI."""
+    if _snowflake is None:
+        return "Chat is only available when this app runs inside Snowflake.", []
+    resp = _snowflake.send_snow_api_request(
+        "POST", f"/api/v2/databases/{DB}/schemas/GROCERY_SEMANTIC/agents/{AGENT}:run",
+        {}, {}, {"messages": messages}, None, 180000,
+    )
+    status = resp.get("status")
+    content = resp.get("content", "")
+    if status != 200:
+        return f"The agent returned an error ({status}): {str(content)[:800]}", []
+    text, tools = "", []
+    parsed = None
+    if isinstance(content, (dict, list)):
+        parsed = content
+    else:
+        try:
+            parsed = json.loads(content)
+        except (TypeError, ValueError):
+            parsed = None
+    if parsed is not None:
+        text, tools = _text_from_json(parsed)
+    if not text:
+        text, tools = _text_from_sse(str(content))
+    if not text:
+        with st.expander("The agent returned no text — raw response (for debugging)"):
+            st.code(f"status={status} type={type(content).__name__}\n" + str(content)[:3000])
+        text = "The agent returned no text."
+    # every exchange goes to the run log (Phase 6), with the raw response head
+    # when parsing failed, so failures can be diagnosed from SQL
+    try:
+        raw_head = "" if tools or not text.startswith("The agent returned") else f"status={status} type={type(content).__name__} " + str(content)[:6000]
+        session.sql(
+            f"INSERT INTO {APP}.AGENT_RUN_LOG (SHOPPER_ID, SOURCE, QUESTION, TOOLS) "
+            f"SELECT CURRENT_USER(), 'app', {lit(messages[-1]['content'][0]['text'][:2000])}, {lit(json.dumps({'tools': tools, 'raw': raw_head}))}"
+        ).collect()
+    except Exception:
+        pass
+    return text, tools
 
 
 # --------------------------------------------------------------------------
