@@ -25,3 +25,8 @@ models:
     marts:
       +materialized: table
       +schema: marts
+      # Pushes _models.yml descriptions into Snowflake comments, which the
+      # semantic view and Cortex Analyst read as business context.
+      +persist_docs:
+        relation: true
+        columns: true

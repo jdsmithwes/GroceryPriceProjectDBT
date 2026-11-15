@@ -123,7 +123,6 @@ models:
 
   - name: int_walmart_price_history
     config:
-      materialized: view
       group: walmart
     description: >
       SCD Type 2 price history derived from stg_walmart_product_catalog.

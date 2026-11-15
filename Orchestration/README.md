@@ -235,10 +235,26 @@ service's permission was independently absent here.
   revision number rather than floating on the family. Done via
   `aws scheduler update-schedule --name <name> --cli-input-json file://<schedule>.json`
   after editing the JSON.)
-- **`task-definition.json`, `friday-schedule.json`, `saturday-schedule.json`**
-  in this folder are the exact specs used to create/update these
-  resources — treat them as the source of truth if anything needs
-  recreating, same convention as the `.sql` files under `Snowflake Scripts/`.
+- **`task-definition.json`, `friday-schedule.json`, `saturday-schedule.json`,
+  `scheduler-role-policy.json`** in this folder are the exact specs used to
+  create/update these resources — treat them as the source of truth if
+  anything needs recreating, same convention as the `.sql` files under
+  `Snowflake Scripts/`. (`scheduler-role-policy.json` is the inline policy on
+  `GroceryIngestSchedulerRole`; apply with `aws iam put-role-policy
+  --role-name GroceryIngestSchedulerRole --policy-name
+  GroceryIngestSchedulerPermissions --policy-document file://Orchestration/scheduler-role-policy.json`.)
+- **When a scheduled run doesn't happen, read the dead-letter queue first**
+  (added 2026-11-14): both schedules send every invocation EventBridge
+  Scheduler gives up on to SQS `grocery-ingest-dlq`, with the error in the
+  message attributes. `aws sqs receive-message --queue-url
+  https://sqs.us-east-1.amazonaws.com/573509103721/grocery-ingest-dlq
+  --attribute-names All --message-attribute-names All`. Before the queue
+  existed, five weekends of failures (2026-10-17 → 2026-11-14) left no trace
+  anywhere except the `AWS/Scheduler` `InvocationDroppedCount` metric — the
+  Scheduler never reached ECS, so there were no task logs, no job-run rows,
+  and no CloudTrail `RunTask` events to find. Also worth a glance:
+  `JOB_PERFORMANCE.ORCHESTRATION_JOB_RUNS` only records runs that *started*,
+  so a silent week there means "check the scheduler," not "nothing to load."
 - **One-off triggers outside the regular weekly cadence**: don't just
   `run-task` and hope you remember to finish it manually — create a
   single-fire EventBridge Schedule instead, same `Target` shape as the two
@@ -257,4 +273,5 @@ service's permission was independently absent here.
 | ECS task definition | `grocery-ingest` (revision 2 — Walmart added 2026-09-01) |
 | CloudWatch log group | `/ecs/grocery-ingest` (no retention policy set — `logs:PutRetentionPolicy` gap, logs never expire) |
 | EventBridge Schedules | `grocery-ingest-friday-full`, `grocery-ingest-saturday-continue` |
+| SQS dead-letter queue | `grocery-ingest-dlq` (14-day retention; target of both schedules' `DeadLetterConfig`, added 2026-11-14) |
 | S3 prefixes read by this pipeline | `s3://grocerydbtprojectrawdata/{kroger,walmart,orchestration_runs}/` |

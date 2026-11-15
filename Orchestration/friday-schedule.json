@@ -18,6 +18,9 @@
         }
       }
     },
-    "Input": "{\"containerOverrides\":[{\"name\":\"grocery-ingest\",\"environment\":[{\"name\":\"RUN_MODE\",\"value\":\"friday_full\"}]}]}"
+    "Input": "{\"containerOverrides\":[{\"name\":\"grocery-ingest\",\"environment\":[{\"name\":\"RUN_MODE\",\"value\":\"friday_full\"}]}]}",
+    "DeadLetterConfig": {
+      "Arn": "arn:aws:sqs:us-east-1:573509103721:grocery-ingest-dlq"
+    }
   }
 }

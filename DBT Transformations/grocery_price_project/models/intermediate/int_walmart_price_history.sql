@@ -1,14 +1,20 @@
-{{ config(materialized='view', schema='intermediate_walmart') }}
+{{ config(
+    materialized='dynamic_table',
+    target_lag='24 hours',
+    snowflake_warehouse='COMPUTE_WH',
+    refresh_mode='FULL',
+    schema='intermediate_walmart'
+) }}
 
 -- SCD Type 2 price history, one row per contiguous span of unchanged
 -- MSRP/SALE_PRICE for a given ITEM_ID. Direct mirror of
--- int_kroger_price_history's technique, with two structural differences:
--- grain is ITEM_ID alone (Walmart catalog pricing is national, no
--- store/location dimension the way Kroger's is), and materialized as a
--- view rather than a table — Kroger's table materialization was earned by
--- measured query cost (49 queries/7 days, ~580MB scanned each as a view)
--- that doesn't exist yet for Walmart at this data volume. Revisit if real
--- usage ever justifies it.
+-- int_kroger_price_history's technique; grain is ITEM_ID alone (Walmart
+-- catalog pricing is national, no store/location dimension the way
+-- Kroger's is).
+--
+-- Dynamic table (was a view until the grocery value agent): the agent's
+-- marts read this on every question, so the window-function pass is
+-- precomputed once per weekly load, same as Kroger's.
 --
 -- A new version starts whenever MSRP or SALE_PRICE actually changes from
 -- the immediately preceding observation for that same item. IS DISTINCT
