@@ -80,11 +80,33 @@ models:
       - name: NUM_REVIEWS
         description: "Walmart review count."
       - name: IS_GROCERY
-        description: "TRUE if the product maps to a common grocery category. Use for every shopping answer."
+        description: "TRUE if the product maps to a common category (includes household departments like Beauty, Pet Care, Cleaning)."
+      - name: IS_FOOD
+        description: "TRUE if the product is food or drink. Use for food questions, per-ounce rankings and category trends."
+        data_tests: [not_null]
       - name: HAS_EXACT_MATCH
         description: "TRUE if the identical UPC is carried by the other retailer."
       - name: DATA_AS_OF
         description: "When this product's catalog details were last collected."
+      - name: PACKAGE_QUANTITY
+        description: "Package size in UNIT_BASIS units (multipacks multiplied out), parsed from Kroger SIZE or the Walmart product name."
+      - name: UNIT_BASIS
+        description: "'oz' (weight), 'fl_oz' (volume) or 'ct' (item count). Compare unit prices only within the same basis."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['oz', 'fl_oz', 'ct']
+      - name: PARSE_CONFIDENCE
+        description: "high, low (caveat the per-unit price), none (no usable size)."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['high', 'low', 'none']
+      - name: IS_STORE_BRAND
+        description: "TRUE for the retailer's own label (Kroger, Private Selection, Simple Truth, Great Value, Marketside, ...)."
+      - name: STORE_BRAND_TIER
+        description: "Store-brand tier: value, core, premium, natural, organic, bakery, fresh, meal_kit, baby, pet, household, health."
 
   - name: fct_price_weekly
     description: >
@@ -249,6 +271,14 @@ models:
         description: "Most common comparison week for the 4-week change."
       - name: DATA_AS_OF
         description: "Latest collection timestamp behind these prices."
+      - name: UNIT_BASIS
+        description: "Unit of MIN_UNIT_PRICE / MEDIAN_UNIT_PRICE: oz, fl_oz or ct."
+      - name: PARSE_CONFIDENCE
+        description: "Confidence in the package size behind the unit prices; caveat 'low'."
+      - name: MIN_UNIT_PRICE
+        description: "Lowest current price per UNIT_BASIS unit (e.g. dollars per ounce). Use for 'cheapest per ounce' and store-brand vs name-brand comparisons."
+      - name: MEDIAN_UNIT_PRICE
+        description: "Typical current price per UNIT_BASIS unit across stores."
 
   - name: fct_cross_retailer_price_comparison
     description: >
@@ -405,6 +435,10 @@ models:
         description: "Week to check back when the forecast expects a lower price."
       - name: SIGNALS_AGREE
         description: "TRUE when rule and forecast point the same way; FALSE when they diverge; null without a forecast."
+      - name: IS_SHELF_STABLE
+        description: "TRUE if the product keeps at room temperature."
+      - name: IS_STOCK_UP_CANDIDATE
+        description: "Shelf-stable AND currently a GOOD_PRICE — worth buying extra now."
 
   - name: dim_forecast_scope
     description: >
@@ -422,3 +456,36 @@ models:
           - accepted_values:
               arguments:
                 values: ['shared_product']
+
+  - name: fct_category_price_index_weekly
+    description: >
+      "Is dairy getting more expensive?" — chained Jevons price index per
+      retailer x common category x observed week (first week = 100): each
+      link is the geometric mean of week-over-week price ratios over grocery
+      products seen in both weeks. A link can span a collection gap
+      (WEEKS_SINCE_PREVIOUS > 1) — mention it when it does.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [RETAILER, COMMON_CATEGORY, PRICE_WEEK]
+    columns:
+      - name: COMMON_CATEGORY
+        description: "Retailer-neutral category."
+        data_tests: [not_null]
+      - name: PRICE_WEEK
+        description: "Monday of the collection week."
+      - name: PRICE_INDEX
+        description: "Category price level vs BASE_WEEK = 100 (105 = 5% pricier)."
+        data_tests: [not_null]
+      - name: CHANGE_VS_PREVIOUS_PCT
+        description: "Change since the previous observed week (0.02 = +2%)."
+      - name: WEEKS_SINCE_PREVIOUS
+        description: "Calendar weeks the link covers; >1 means a collection gap."
+      - name: PRODUCTS_IN_LINK
+        description: "Products priced in both weeks (base row: products in the base week)."
+      - name: PRODUCTS_PRICE_CHANGED
+        description: "Products whose price changed in this link."
+      - name: BASE_WEEK
+        description: "Week the index equals 100."
+      - name: IS_FOOD_CATEGORY
+        description: "TRUE for food and drink categories; filter on it for food-price trends."

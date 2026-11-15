@@ -20,7 +20,9 @@ with current_rows as (
     select * from {{ ref('fct_product_price_summary') }}
     where IS_CURRENTLY_LISTED
 
-)
+),
+
+rolled as (
 
 select
     PRODUCT_KEY,
@@ -65,3 +67,21 @@ select
 
 from current_rows
 group by PRODUCT_KEY, RETAILER, PRODUCT_ID
+
+)
+
+-- Unit prices: price per ounce / fluid ounce / item, from the parsed package
+-- size. Null when the size couldn't be parsed (PARSE_CONFIDENCE 'none').
+-- Compare unit prices only within the same UNIT_BASIS.
+select
+    r.*,
+    p.UNIT_BASIS,
+    p.PARSE_CONFIDENCE,
+    iff(p.PARSE_CONFIDENCE <> 'none' and p.PACKAGE_QUANTITY > 0,
+        round(r.MIN_CURRENT_PRICE / p.PACKAGE_QUANTITY, 4), null) as MIN_UNIT_PRICE,
+    iff(p.PARSE_CONFIDENCE <> 'none' and p.PACKAGE_QUANTITY > 0,
+        round(r.MEDIAN_CURRENT_PRICE / p.PACKAGE_QUANTITY, 4), null) as MEDIAN_UNIT_PRICE
+
+from rolled r
+left join {{ ref('dim_product') }} p
+    on p.PRODUCT_KEY = r.PRODUCT_KEY

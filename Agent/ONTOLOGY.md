@@ -44,9 +44,14 @@ store, ZIP, or city when the shopper asks.
 **Common Category** — a retailer-neutral category (e.g. Dairy, Snacks) from the
 hand-curated crosswalk seed `retailer_category_crosswalk.csv`.
 
-**Unit price / unit basis** — effective price per ounce, fluid ounce, pound, or count,
-from the parsed package size. Compare only within the same unit basis. Each parse
-carries `PARSE_CONFIDENCE` (`high`, `low`, `none`); state it when it's not `high`.
+**Unit price / unit basis** — effective price per ounce (weight), fluid ounce (volume),
+or item (count), from the parsed package size; pounds, grams, liters and gallons are
+converted. Multipacks are multiplied out. Compare only within the same unit basis. Each
+parse carries `PARSE_CONFIDENCE` (`high`, `low`, `none`); state it when it's not `high`.
+
+**Food vs grocery** — *grocery*: anything the retailer sells that maps to a common
+category, including household departments (cleaning, beauty, pet care). *Food*: food or
+drink categories only. Food questions, per-ounce rankings and price trends use food.
 
 **Store brand** — a retailer's own label (e.g. Kroger, Simple Truth, Private Selection;
 Great Value, Marketside), listed in `private_label_brands.csv`. Store-brand savings =

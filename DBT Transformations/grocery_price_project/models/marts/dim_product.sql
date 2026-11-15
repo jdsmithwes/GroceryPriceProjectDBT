@@ -10,15 +10,22 @@
 -- int_retailer_common_upcs proves they're identical.
 --
 -- IS_GROCERY = the item maps to a common category in the crosswalk. That
--- filters out what Walmart's "Food" department pull drags in (Flower Shop,
--- Food Gifts) and Kroger's non-food departments; agent-facing marts should
--- filter on it.
+-- filters out Walmart's Flower Shop / Food Gifts, but still includes
+-- household departments (Beauty, Pet Care, Cleaning, Sporting Goods...).
+-- IS_FOOD = at least one of its categories is food or drink (var
+-- food_common_categories) — use it for food questions, per-ounce rankings and
+-- category trends, or lipstick ($999/oz) and cat food show up.
+--
+-- PACKAGE_QUANTITY / UNIT_BASIS / PARSE_CONFIDENCE come from
+-- int_product_unit_size (per-ounce pricing); IS_STORE_BRAND /
+-- STORE_BRAND_TIER from the private_label_brands seed.
 --
 -- IS_SHELF_STABLE: Kroger has a real signal (TEMPERATURE = 'Ambient').
 -- Walmart has none, so it falls back to common categories that are
 -- shelf-stable by nature (var shelf_stable_common_categories).
 
 {% set shelf_stable = var('shelf_stable_common_categories') %}
+{% set food = var('food_common_categories') %}
 
 with categories as (
 
@@ -116,16 +123,39 @@ walmart as (
     left join matches m
         on m.WALMART_ITEM_ID = w.ITEM_ID
 
-)
+),
 
-select
-    *,
-    PRIMARY_COMMON_CATEGORY is not null as IS_GROCERY,
-    UPC_A is not null as HAS_EXACT_MATCH,
-    RETAILER || ':' || PRODUCT_ID as PRODUCT_KEY
+unioned as (
 
-from (
     select * from kroger
     union all
     select * from walmart
+
 )
+
+select
+    u.*,
+    u.PRIMARY_COMMON_CATEGORY is not null as IS_GROCERY,
+    coalesce(arrays_overlap(u.COMMON_CATEGORIES, array_construct(
+        {%- for cat in food %}'{{ cat }}'{{ ',' if not loop.last }}{% endfor -%}
+    )), false) as IS_FOOD,
+    u.UPC_A is not null as HAS_EXACT_MATCH,
+    u.RETAILER || ':' || u.PRODUCT_ID as PRODUCT_KEY,
+
+    ---------- package size (int_product_unit_size)
+    s.PACKAGE_QUANTITY,
+    s.UNIT_BASIS,
+    s.ITEMS_IN_PACKAGE,
+    coalesce(s.PARSE_CONFIDENCE, 'none') as PARSE_CONFIDENCE,
+
+    ---------- store brand (private_label_brands seed)
+    pl.BRAND is not null as IS_STORE_BRAND,
+    pl.TIER as STORE_BRAND_TIER
+
+from unioned u
+left join {{ ref('int_product_unit_size') }} s
+    on s.RETAILER = u.RETAILER
+    and s.PRODUCT_ID = u.PRODUCT_ID
+left join {{ ref('private_label_brands') }} pl
+    on pl.RETAILER = u.RETAILER
+    and pl.BRAND = u.BRAND

@@ -210,6 +210,19 @@ service's permission was independently absent here.
   override setting `RUN_MODE` to `friday_full` or `saturday_kroger_continue`
   — see `friday-schedule.json`/`saturday-schedule.json` for the exact
   network configuration to reuse.
+- **Seasonal products (added 2026-11-15)**: `friday_full` first runs
+  `API Scripts/Kroger Scripts/Product Catalogs/kroger_seasonal_watchlist.py --season auto`,
+  which picks the season from the date (Thanksgiving Oct 20 → Thanksgiving
+  day; Christmas → Dec 24; Easter −35 days → Easter; July 4th Jun 13 → Jul 4),
+  searches Kroger for that season's terms (~50 calls), and writes matches to
+  `kroger/seasonal/kroger_product_catalog_seasonal_<season>_<ts>.csv`. The
+  catalog pipe loads them, and `Kroger_Pricing_*.py` prices every seasonal
+  file from the last 60 days, so holiday items drop out on their own.
+  Without it, seasonal items were never priced: the sweep's product list is
+  the 2026-08-14 catalog crawl, which had 1 whole turkey. Outside every
+  window the step logs "no seasonal shopping window" and exits 0. It shows up
+  in `ORCHESTRATION_JOB_RUNS` as source `kroger_seasonal`. Rollback image:
+  ECR tag `pre-seasonal-2026-11-15` (the 2026-09-13 build).
 - **Retry just Walmart without touching Kroger**: `RUN_MODE=walmart_only`
   — re-running the whole `friday_full` mode just to retry Walmart would
   also reset and re-burn the Kroger checkpoint for no reason. (Replaces

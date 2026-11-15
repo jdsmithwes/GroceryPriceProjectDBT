@@ -58,3 +58,33 @@ seeds:
         description: "Internal-point latitude of the ZCTA."
       - name: LONGITUDE
         description: "Internal-point longitude of the ZCTA."
+
+  - name: private_label_brands
+    description: >
+      Each retailer's own (private-label) brands, from the brands present in
+      the collected catalogs (2026-11-15). TIER groups them (value / core /
+      premium / natural / organic / bakery / ...). "Generic" and "Unbranded"
+      on Walmart are missing brand data, not a store brand, and are
+      deliberately excluded. Matching on BRAND is exact.
+    config:
+      column_types:
+        RETAILER: varchar
+        BRAND: varchar
+        TIER: varchar
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [RETAILER, BRAND]
+    columns:
+      - name: RETAILER
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['kroger', 'walmart']
+      - name: BRAND
+        description: "Brand name exactly as the retailer's catalog spells it."
+        data_tests: [not_null]
+      - name: TIER
+        description: "Private-label tier: value, core, premium, natural, organic, bakery, fresh, meal_kit, baby, pet, household, health."
+        data_tests: [not_null]

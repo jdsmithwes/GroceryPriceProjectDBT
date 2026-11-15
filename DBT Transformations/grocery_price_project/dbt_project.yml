@@ -22,6 +22,25 @@ vars:
     - International
     - Pasta, Sauces, Grain
     - Snacks
+  # Common categories that are food or drink. IS_FOOD on dim_product uses it;
+  # 'Baby' is left out because it mixes baby food with diapers and wipes.
+  food_common_categories:
+    - Adult Beverage
+    - Bakery
+    - Baking Goods
+    - Beverages
+    - Breakfast
+    - Candy
+    - Canned & Packaged
+    - Condiment & Sauces
+    - Dairy
+    - Deli
+    - Frozen
+    - International
+    - Meat & Seafood
+    - Pasta, Sauces, Grain
+    - Produce
+    - Snacks
   history_trailing_weeks: 12        # window for low/median/high and percentile
   deal_genuine_discount_pct: 0.10   # promo at least this far below the item's median regular price
   deal_routine_promo_share: 0.50    # on promo in at least this share of observed weeks = routine

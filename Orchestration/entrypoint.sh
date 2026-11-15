@@ -47,6 +47,14 @@ run_source() {
 
 case "${RUN_MODE:-}" in
   friday_full)
+    # Before pricing, so this week's sweep already includes the season's
+    # items (whole turkeys etc.). --season auto picks the season from the
+    # date and exits 0 outside every window; ~50 Kroger calls when active.
+    # Non-fatal like every source: a failure here is recorded and pricing
+    # still runs on the regular product list.
+    echo "=== Kroger seasonal watchlist (auto season) ==="
+    run_source kroger_seasonal python3 "API Scripts/Kroger Scripts/Product Catalogs/kroger_seasonal_watchlist.py" --season auto
+
     echo "=== Kroger pricing: reset checkpoint + full 81-store sweep ==="
     run_source kroger python3 "API Scripts/Kroger Scripts/Product Pricing/Kroger_Pricing_2026-08-10.py" --reset-checkpoint
 

@@ -166,7 +166,7 @@ signals as (
 )
 
 select
-    *,
+    signals.*,
     case
         when RULE_SIGNAL = 'INSUFFICIENT_HISTORY' then 'INSUFFICIENT_HISTORY'
         when RULE_SIGNAL = 'GOOD_PRICE' and FORECAST_DIRECTION = 'LOWER' then 'BUY_NOW_OR_WAIT'
@@ -180,6 +180,13 @@ select
         when FORECAST_DIRECTION = 'NONE' then null
         when RULE_SIGNAL = 'GOOD_PRICE' then FORECAST_DIRECTION <> 'LOWER'
         when RULE_SIGNAL = 'HIGH_PRICE' then FORECAST_DIRECTION = 'LOWER'
-    end as SIGNALS_AGREE
+    end as SIGNALS_AGREE,
+
+    -- Stock-up: worth buying extra of now — the item keeps (shelf-stable)
+    -- and today's price is good by the rule.
+    coalesce(p.IS_SHELF_STABLE, false) as IS_SHELF_STABLE,
+    coalesce(p.IS_SHELF_STABLE, false) and RULE_SIGNAL = 'GOOD_PRICE' as IS_STOCK_UP_CANDIDATE
 
 from signals
+left join {{ ref('dim_product') }} p
+    on p.PRODUCT_KEY = signals.PRODUCT_KEY
