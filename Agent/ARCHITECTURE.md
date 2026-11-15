@@ -136,10 +136,18 @@ a 2-credit monitor. Its rule: **sensors decide, agents explain, humans act.**
   `EVENT_ID`s, and may only *name* a runbook action.
 - **Control plane**: `AGENT_REGISTRY` (every deployed component, model,
   schedule, last run, silence flag), `MODEL_POLICY` and `OPS_CHECK` edited
-  through audited procedures, the Streamlit Operations tab, and the weekly
-  digest email. Runbook: `Agent/ops/README.md`.
-- **Independence**: the planned AWS Lambda watcher (`Orchestration/ops-watcher/`)
-  checks the supervisor's heartbeat from outside Snowflake.
+  through audited procedures. Surfaced natively since 2026-11-15: a Snowsight
+  dashboard (tile SQL in `Agent/ops/dashboard_tiles.sql`), the semantic view
+  `GROCERY_OPS.SV_OPS` with the Cortex Agent `GROCERY_OPS_AGENT` for Snowflake
+  Intelligence (reads everything; writes only on explicit human request), and
+  the six agents mirrored as objects on the Snowsight Agents page
+  (`SP_SYNC_AGENT_OBJECTS`). The Streamlit Operations tab was retired; the
+  weekly digest email remains the push channel. Runbook: `Agent/ops/README.md`.
+- **Independence**: the AWS Lambda watcher (`Orchestration/ops-watcher/`,
+  deployed 2026-11-15) reads one heartbeat view as a key-pair service user and
+  emails through SNS if the supervisor is silent for 26 h or Snowflake is
+  unreachable; a CloudWatch alarm on EventBridge Scheduler attempts covers the
+  "job never started" case from the AWS side.
 
 This is the Snowflake answer to "who runs the agents": the same platform
 that holds the data runs the sensors, the models and the audit trail, with

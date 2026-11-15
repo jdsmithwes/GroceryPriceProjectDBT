@@ -281,10 +281,10 @@ WHEN NOT MATCHED THEN INSERT (SLO_NAME, DESCRIPTION, TARGET, WINDOW_DAYS) VALUES
 
 MERGE INTO GROCERYDBTPROJECT.GROCERY_OPS.OPS_RUNBOOK t
 USING (SELECT * FROM VALUES
-    ('scheduler_drop', 'No ORCHESTRATION_JOB_RUNS row for a Friday or Saturday slot; no ECS task; nothing in CloudWatch',
-       'EventBridge Scheduler dropped the invocation before RunTask (Oct 17 - Nov 14 2026, root cause unobserved). The DLQ grocery-ingest-dlq now receives these.',
-       'Read the DLQ message; re-save the schedule; trigger a one-off schedule for the missed mode (never friday_full on the same Kroger budget day as another run). Prices for the missed week are lost for good.',
-       'human', 'Orchestration/README.md'),
+    ('scheduler_drop', 'No ORCHESTRATION_JOB_RUNS row for a Friday or Saturday slot and no ECS task, while CloudWatch AWS/Scheduler shows InvocationAttemptCount = 1 with TargetErrorCount = 1 and InvocationDroppedCount = 1 for the slot',
+     'Corrected 2026-11-15 from the Scheduler metrics: EventBridge Scheduler DID attempt every Friday/Saturday slot from Oct 15 to Nov 13 2026; each attempt ended in a target error (ECS RunTask rejected) and was dropped because the schedules had no DLQ, so no task ever started. Oct 1-9 attempts succeeded; Nov 14 succeeded after the schedules were re-created on 2026-11-15. The RunTask error text was never captured (no DLQ then); grocery-ingest-dlq now receives it.',
+     'Read the DLQ message for the RunTask error (task-definition revision, network config, IAM PassRole are the usual causes); fix the schedule target; re-run the slot with a one-off schedule (never friday_full on a weekday that already spent the Kroger 10k budget). The CloudWatch alarm grocery-ingest-friday-never-started (7 days without any attempt) and the Saturday ingestion sensors are the two independent detectors.',
+     'human', 'Orchestration/README.md, Orchestration/ops-watcher/README.md'),
     ('pipe_stopped', 'SYSTEM$PIPE_STATUS executionState = STOPPED_MISSING_TABLE or STOPPED_*; files land in S3 but no rows arrive',
        'A target table or schema was renamed/dropped (happened 2026-08-10 after a schema rename).',
        'Recreate or repoint the target, then ALTER PIPE ... REFRESH to load the backlog. Confirm with COPY_HISTORY.',

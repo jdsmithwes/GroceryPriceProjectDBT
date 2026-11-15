@@ -1,0 +1,112 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "WatcherLambda",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:CreateFunction",
+        "lambda:GetFunction",
+        "lambda:GetFunctionConfiguration",
+        "lambda:UpdateFunctionCode",
+        "lambda:UpdateFunctionConfiguration",
+        "lambda:InvokeFunction",
+        "lambda:TagResource",
+        "lambda:DeleteFunction"
+      ],
+      "Resource": "arn:aws:lambda:us-east-1:573509103721:function:grocery-ops-watcher"
+    },
+    {
+      "Sid": "WatcherRoles",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:GetRole",
+        "iam:PutRolePolicy",
+        "iam:GetRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:DeleteRole",
+        "iam:TagRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::573509103721:role/grocery-ops-watcher-lambda-role",
+        "arn:aws:iam::573509103721:role/grocery-ops-watcher-scheduler-role"
+      ]
+    },
+    {
+      "Sid": "WatcherLambdaLogsPolicyOnly",
+      "Effect": "Allow",
+      "Action": "iam:AttachRolePolicy",
+      "Resource": "arn:aws:iam::573509103721:role/grocery-ops-watcher-lambda-role",
+      "Condition": {
+        "ArnEquals": {
+          "iam:PolicyARN": "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+        }
+      }
+    },
+    {
+      "Sid": "PassWatcherRoles",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": [
+        "arn:aws:iam::573509103721:role/grocery-ops-watcher-lambda-role",
+        "arn:aws:iam::573509103721:role/grocery-ops-watcher-scheduler-role"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": ["lambda.amazonaws.com", "scheduler.amazonaws.com"]
+        }
+      }
+    },
+    {
+      "Sid": "WatcherSecret",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:CreateSecret",
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:PutSecretValue",
+        "secretsmanager:TagResource",
+        "secretsmanager:DeleteSecret"
+      ],
+      "Resource": "arn:aws:secretsmanager:us-east-1:573509103721:secret:grocery/ops-watcher-*"
+    },
+    {
+      "Sid": "AlertsTopic",
+      "Effect": "Allow",
+      "Action": [
+        "sns:CreateTopic",
+        "sns:GetTopicAttributes",
+        "sns:SetTopicAttributes",
+        "sns:Subscribe",
+        "sns:ListSubscriptionsByTopic",
+        "sns:Publish",
+        "sns:TagResource"
+      ],
+      "Resource": "arn:aws:sns:us-east-1:573509103721:grocery-ops-alerts"
+    },
+    {
+      "Sid": "WatcherSchedule",
+      "Effect": "Allow",
+      "Action": [
+        "scheduler:CreateSchedule",
+        "scheduler:GetSchedule",
+        "scheduler:UpdateSchedule",
+        "scheduler:DeleteSchedule",
+        "scheduler:TagResource"
+      ],
+      "Resource": "arn:aws:scheduler:us-east-1:573509103721:schedule/default/grocery-ops-watcher"
+    },
+    {
+      "Sid": "FridayAlarm",
+      "Effect": "Allow",
+      "Action": [
+        "cloudwatch:PutMetricAlarm",
+        "cloudwatch:DescribeAlarms",
+        "cloudwatch:DeleteAlarms",
+        "cloudwatch:TagResource"
+      ],
+      "Resource": "arn:aws:cloudwatch:us-east-1:573509103721:alarm:grocery-ingest-friday-never-started"
+    }
+  ]
+}

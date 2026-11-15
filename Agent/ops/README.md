@@ -33,13 +33,17 @@ whitelist of actions (`03_autonomy.sql`, not yet written) can run, gated by
 | Continuous improvement agent | `SP_RUN_AGENT('improvement')` | Sun 09:00 | Opus 5.5 |
 | Supervisor | `SP_RUN_AGENT('supervisor')`, `('supervisor','digest')` on Sundays | daily 07:00, Sun 09:00 | Sonnet 5.5 / Opus 5.5 (digest) |
 | Tasks | `TASK_OPS_DAILY`, `TASK_OPS_FRI`, `TASK_OPS_SAT`, `TASK_OPS_WEEKLY` | as above | — |
-| Control plane UI | Streamlit `GROCERY_SEMANTIC.GROCERY_VALUE_APP` → Operations tab | — | — |
-| Independent watcher | AWS Lambda `grocery-ops-watcher` (planned; see below) | daily 09:00 | — |
+| Control plane, read | Snowsight dashboard **Grocery Ops** (tile SQL in `Agent/ops/dashboard_tiles.sql`) over `GROCERY_OPS.*` and the semantic view `GROCERY_OPS.SV_OPS` | on open | — |
+| Control plane, ask / change | Cortex Agent `GROCERY_OPS.GROCERY_OPS_AGENT` (Snowflake Intelligence); six mirror objects `GROCERY_OPS.AGENT_<DOMAIN>` on the Snowsight **AI & ML › Agents** page, kept in sync by `SP_SYNC_AGENT_OBJECTS()` | on demand | Sonnet 5.5 |
+| Independent watcher | AWS Lambda `grocery-ops-watcher` → SNS `grocery-ops-alerts` → Proton (deployed 2026-11-15; `Orchestration/ops-watcher/`) | daily 09:00 | — |
+| Scheduler alarm | CloudWatch `grocery-ingest-friday-never-started`: no EventBridge Scheduler attempt for 7 days → same SNS topic | continuous | — |
 
 All of it runs as `GROCERY_OPS_ROLE` on `GROCERY_OPS_WH` (X-Small, 60 s
 auto-suspend) under `GROCERY_OPS_MONITOR` (2 credits/month). Scripts, in run
 order: `Snowflake Scripts/Ops/01_ops_schema.sql` (role, warehouse, monitors,
-tables, seeds), `02_ops_sensors.sql`, `03_ops_agents.sql`, `04_ops_alerts.sql`.
+tables, seeds), `02_ops_sensors.sql`, `03_ops_agents.sql`, `04_ops_alerts.sql`, `05_ops_watcher.sql`
+(Snowflake side of the AWS watcher, prod only), `06_control_plane.sql` (semantic
+view, control-plane agent, agent mirrors).
 Each has a `sed` line in its header for the sandbox schema `GROCERY_DEV_OPS`.
 
 ## What each agent checks (the sensors behind it)
@@ -92,10 +96,41 @@ Known failure modes and their fixes are rows in `GROCERY_OPS.OPS_RUNBOOK`
 dynamic table, failed forecast task, stale search, cost spike). Add a row
 when you learn a new one; the agents read the table.
 
+## The control plane (native Snowflake, since 2026-11-15)
+
+The Streamlit Operations tab was retired the same day; nothing of ours sits
+between you and the ops tables.
+
+- **Dashboard** — Snowsight › Projects › Dashboards › *Grocery Ops*. Nine
+  tiles (scorecards, registry, open findings, budget per monitor, credits per
+  warehouse per day, recent runs, model policy, agent tokens by model, latest
+  supervisor report). Snowsight has no DDL for dashboards, so the tile SQL
+  lives in `Agent/ops/dashboard_tiles.sql`; build it once by pasting each
+  block. Leave auto-refresh off (eight X-Small queries per open is the cost).
+- **Ask** — `GROCERY_OPS.GROCERY_OPS_AGENT` in Snowflake Intelligence (or the
+  Agents page chat): "did every agent run this week", "what is open",
+  "credits vs the 20 ceiling", "what did the supervisor say". It answers
+  through Cortex Analyst over the semantic view `SV_OPS` (components, runs,
+  findings, checks, model policy, daily metrics, SLOs) plus the runbook and
+  metric-history tools.
+- **Change** — the same agent holds `set_model_policy`, `set_check` and
+  `acknowledge_finding`, which call the audited procedures below. It is
+  instructed to write only when you explicitly ask, to restate the change and
+  to require a reason; that is a human-initiated action, so it stays inside
+  the notify-only rule. The scheduled agents never get these tools.
+- **Inventory** — Snowsight › AI & ML › Agents lists `GROCERY_OPS_AGENT`,
+  the shopper agent and the six mirrors `AGENT_INGESTION … AGENT_SUPERVISOR`.
+  A mirror is built from its `AGENT_REGISTRY` row and `MODEL_POLICY` by
+  `SP_SYNC_AGENT_OBJECTS()`; the registry stays the source of truth and the
+  scheduled runs still go through `SP_RUN_AGENT`. Each mirror can be
+  test-driven in its chat with the three read-only tools.
+
 ## Changing things (all audited in `CONFIG_AUDIT`)
 
 - **Model for a task**: `CALL GROCERY_OPS.SP_SET_MODEL_POLICY('ops_cost', 'claude-sonnet-5-5', 'why')`
-  or the Operations tab. Takes effect on the next run. Each row has a
+  or ask `GROCERY_OPS_AGENT`: "switch the cost agent to haiku because …" (it calls the
+  same procedure). Takes effect on the next run. Then `CALL GROCERY_OPS.SP_SYNC_AGENT_OBJECTS()`
+  so the Snowsight mirror shows the new model. Each row has a
   fallback model and a monthly token budget; `ENABLED = FALSE` is the per-agent
   kill switch.
 - **Threshold or silence a check**: `CALL GROCERY_OPS.SP_SET_CHECK('walmart_row_volume', 'why', WARN_THRESHOLD => 60)`;
@@ -103,7 +138,8 @@ when you learn a new one; the agents read the table.
 - **Acknowledge a finding**: `CALL GROCERY_OPS.SP_ACK_EVENT('<event_id>', 'note')`.
 - **Agent instructions**: edit `Agent/ops/prompts/<agent>.md`, bump the
   version, copy into `03_ops_agents.sql`, run the sandbox variant, run the
-  ops golden set (to be added under `Agent/ops/evals/`), then prod.
+  ops golden set (to be added under `Agent/ops/evals/`), then prod, then
+  `CALL GROCERY_OPS.SP_SYNC_AGENT_OBJECTS()`.
 - **A new check**: a `V_CHECK_<name>` view with the standard columns plus a
   row in `OPS_CHECK`; nothing else changes.
 - Every change: sandbox (`GROCERY_DEV_OPS`) → PR `dev` → `main` with the
@@ -132,9 +168,13 @@ and runs are history, not state the product depends on.
 
 ## Not done yet (as of 2026-11-15)
 
-- Independent AWS watcher (Lambda reading `OPS_RUN` through the SQL API with a
-  dedicated read-only key-pair user, SNS → Proton) — needs IAM from the owner.
-- CloudWatch alarm on the Friday `RunTask`.
+- Build the Snowsight dashboard once from `dashboard_tiles.sql`; add
+  `GROCERY_OPS_AGENT` to Snowflake Intelligence (Snowsight › AI & ML › Agents,
+  or re-create it in `SNOWFLAKE_INTELLIGENCE.AGENTS` if the picker does not
+  list agents from other schemas).
+- A second CloudWatch alarm on `AWS/Scheduler TargetErrorCount ≥ 1` (would have
+  caught the Oct 15 – Nov 13 failures on day one; needs one more alarm name in
+  `Orchestration/ops-watcher/iam-deployer-policy.json`).
 - `03_autonomy.sql` (month 2) and `Agent/ops/evals/` (ops golden set).
 - `01_governance.sql` section 5 — dbt still runs as ACCOUNTADMIN; required
   before any autonomy is enabled.
