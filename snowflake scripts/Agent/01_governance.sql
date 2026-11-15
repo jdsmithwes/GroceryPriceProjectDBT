@@ -41,7 +41,21 @@ CREATE RESOURCE MONITOR IF NOT EXISTS GROCERY_AGENT_MONITOR
 ALTER WAREHOUSE GROCERY_AGENT_WH SET RESOURCE_MONITOR = GROCERY_AGENT_MONITOR;
 
 GRANT USAGE ON WAREHOUSE GROCERY_AGENT_WH TO ROLE GROCERY_AGENT_USER;
-GRANT USAGE ON WAREHOUSE GROCERY_AGENT_WH TO ROLE GROCERY_ML_ROLE;
+
+-- Forecast training/forecasting only (already created 2026-11-15, ahead of
+-- the rest of this script). Medium, because SNOWFLAKE.ML.FORECAST
+-- parallelizes multi-series training across nodes — the first attempt on
+-- X-Small COMPUTE_WH (6,733 series) ran 4h23m and cost ~4.7 credits before
+-- being cancelled. Always run forecasts scoped (SCOPE_TABLE, see
+-- 02_forecast.sql) and time a sample before widening the scope.
+CREATE WAREHOUSE IF NOT EXISTS GROCERY_ML_WH
+    WAREHOUSE_SIZE = MEDIUM
+    AUTO_SUSPEND = 60
+    AUTO_RESUME = TRUE
+    INITIALLY_SUSPENDED = TRUE
+    COMMENT = 'Grocery value agent: SNOWFLAKE.ML.FORECAST training/forecast only. Medium so multi-series training parallelizes; auto-suspends in 60s.';
+ALTER WAREHOUSE GROCERY_ML_WH SET RESOURCE_MONITOR = GROCERY_AGENT_MONITOR;
+GRANT USAGE ON WAREHOUSE GROCERY_ML_WH TO ROLE GROCERY_ML_ROLE;
 
 ------------------------------------------------------------------------------
 -- 3. Schemas for the agent layer (GROCERY_MARTS is created by dbt)

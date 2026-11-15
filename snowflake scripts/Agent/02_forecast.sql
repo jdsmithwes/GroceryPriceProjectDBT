@@ -1,7 +1,9 @@
 -- Grocery value agent — Phase 2: weekly price forecast (SNOWFLAKE.ML.FORECAST).
 --
 -- One procedure, parameterized by input table and target schema, so the same
--- code runs in the sandbox (GROCERY_DEV_*) and prod (GROCERY_*):
+-- code runs in the sandbox (GROCERY_DEV_*) and prod (GROCERY_*). This file
+-- creates it in the sandbox schema; the prod copy is the same file with
+-- `sed 's/GROCERY_DEV_ML/GROCERY_ML/g'` (how it was deployed 2026-11-15):
 --
 --   CALL GROCERYDBTPROJECT.GROCERY_DEV_ML.SP_REFRESH_PRICE_FORECAST(
 --       'GROCERYDBTPROJECT.GROCERY_DEV_MARTS.DBT_FCT_PRODUCT_PRICE_WEEKLY_SERIES',
@@ -130,18 +132,31 @@ END;
 $$;
 
 ------------------------------------------------------------------------------
--- [PROD, Phase 5] Weekly task — runs Sunday 06:00 ET, after the Friday sweep,
--- the Saturday continuation, and the dynamic tables' 24h refresh. Owned by
--- GROCERY_ML_ROLE on GROCERY_AGENT_WH (see 01_governance.sql). Create the
--- procedure in GROCERY_ML first (same body as above).
+-- [PROD] Weekly task — deployed 2026-11-15 (as ACCOUNTADMIN; hand to
+-- GROCERY_ML_ROLE when 01_governance.sql runs). Sunday 06:00 ET, after the
+-- Friday sweep + Saturday continuation. It refreshes the weekly series first
+-- (a manual dynamic-table refresh also refreshes its upstream chain), because
+-- the tables' own 24h lag could leave Saturday's Kroger stores out of the
+-- training data; then it forecasts, then refreshes the recommendations so
+-- they pick up the new forecast immediately.
 ------------------------------------------------------------------------------
 -- CREATE OR REPLACE TASK GROCERYDBTPROJECT.GROCERY_ML.TASK_WEEKLY_PRICE_FORECAST
 --     WAREHOUSE = GROCERY_ML_WH
 --     SCHEDULE = 'USING CRON 0 6 * * SUN America/New_York'
---     COMMENT = 'Retrain + forecast weekly prices for the grocery value agent'
+--     COMMENT = 'Weekly: refresh price series (and its upstream chain), retrain + forecast the scoped products, refresh buy recommendations'
 -- AS
+-- EXECUTE IMMEDIATE $$
+-- BEGIN
+--     ALTER DYNAMIC TABLE GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_PRODUCT_PRICE_WEEKLY_SERIES REFRESH;
 --     CALL GROCERYDBTPROJECT.GROCERY_ML.SP_REFRESH_PRICE_FORECAST(
 --         'GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_PRODUCT_PRICE_WEEKLY_SERIES',
 --         'GROCERYDBTPROJECT.GROCERY_ML', 6, 8,
 --         'GROCERYDBTPROJECT.GROCERY_MARTS.DBT_DIM_FORECAST_SCOPE');
+--     ALTER DYNAMIC TABLE GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_BUY_RECOMMENDATION REFRESH;
+-- END;
+-- $$;
 -- ALTER TASK GROCERYDBTPROJECT.GROCERY_ML.TASK_WEEKLY_PRICE_FORECAST RESUME;
+--
+-- Monitor: SELECT * FROM TABLE(GROCERYDBTPROJECT.INFORMATION_SCHEMA.TASK_HISTORY(
+--              TASK_NAME => 'TASK_WEEKLY_PRICE_FORECAST')) ORDER BY SCHEDULED_TIME DESC;
+--          SELECT * FROM GROCERYDBTPROJECT.GROCERY_ML.PRICE_FORECAST_RUNS ORDER BY STARTED_AT DESC;
