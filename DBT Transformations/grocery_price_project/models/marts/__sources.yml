@@ -28,3 +28,19 @@ sources:
             description: "Upper end of the 80% prediction interval."
           - name: TRAINED_AT
             description: "When the model behind this forecast was trained."
+      - name: product_type
+        description: >
+          Product-type label per food product ("peanut butter", "whole turkey",
+          "cat food"), produced by GROCERY_ML.SP_LABEL_PRODUCT_TYPES with
+          CORTEX.COMPLETE (llama3.1-70b; Snowflake Scripts/Agent/03_product_types.sql).
+          Incremental: new products are labeled by the weekly task. The sandbox
+          copy is a clone of the prod table.
+        columns:
+          - name: PRODUCT_KEY
+            description: "RETAILER:PRODUCT_ID, matches dim_product."
+          - name: PRODUCT_TYPE
+            description: "Normalized lowercase noun phrase, 1-4 words."
+          - name: MODEL
+            description: "Cortex model that produced the label."
+          - name: LABELED_AT
+            description: "When the label was produced."

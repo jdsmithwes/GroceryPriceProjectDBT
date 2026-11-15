@@ -150,7 +150,10 @@ select
 
     ---------- store brand (private_label_brands seed)
     pl.BRAND is not null as IS_STORE_BRAND,
-    pl.TIER as STORE_BRAND_TIER
+    pl.TIER as STORE_BRAND_TIER,
+
+    ---------- product type (GROCERY_ML.PRODUCT_TYPE, Cortex-labeled; food only)
+    pt.PRODUCT_TYPE
 
 from unioned u
 left join {{ ref('int_product_unit_size') }} s
@@ -159,3 +162,5 @@ left join {{ ref('int_product_unit_size') }} s
 left join {{ ref('private_label_brands') }} pl
     on pl.RETAILER = u.RETAILER
     and pl.BRAND = u.BRAND
+left join {{ source('ml', 'product_type') }} pt
+    on pt.PRODUCT_KEY = u.RETAILER || ':' || u.PRODUCT_ID

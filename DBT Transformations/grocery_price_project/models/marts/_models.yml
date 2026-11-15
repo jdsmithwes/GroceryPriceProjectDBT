@@ -107,6 +107,8 @@ models:
         description: "TRUE for the retailer's own label (Kroger, Private Selection, Simple Truth, Great Value, Marketside, ...)."
       - name: STORE_BRAND_TIER
         description: "Store-brand tier: value, core, premium, natural, organic, bakery, fresh, meal_kit, baby, pet, household, health."
+      - name: PRODUCT_TYPE
+        description: "What the item is, as a short lowercase phrase (peanut butter, whole turkey, turkey lunch meat, cat food). Cortex-labeled (source ml.product_type); food products only, null otherwise. Filter on it to compare like with like."
 
   - name: fct_price_weekly
     description: >

@@ -71,3 +71,7 @@ models:
       +persist_docs:
         relation: true
         columns: true
+    semantic:
+      # Semantic views for Cortex Analyst (dbt_semantic_view package) ->
+      # GROCERY_SEMANTIC in prod, GROCERY_DEV_SEMANTIC in sandbox.
+      +schema: semantic

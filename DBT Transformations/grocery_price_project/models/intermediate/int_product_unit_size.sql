@@ -7,11 +7,14 @@
 --   UNIT_BASIS 'ct'    item count, when no weight/volume is given
 --
 -- Sources and conventions (profiled 2026-11-15):
---   Kroger SIZE is structured: "16 oz", "12 fl oz", "1/2 gal". Multipacks
---     give the size PER ITEM: "4 pk / 12 fl oz" (Poppi) = 4 x 12 fl oz,
---     "20 ct / 1 oz" (Cheez-It) = 20 x 1 oz — so pk/ct/bottles/cans
---     multiply. "8 slices / 6 oz" (cheese) is the TOTAL, so slices/sticks
---     don't.
+--   Kroger SIZE is structured: "16 oz", "12 fl oz", "1/2 gal". Liquid
+--     multipacks give the size PER CONTAINER ("4 pk / 12 fl oz" = 48 fl oz),
+--     so pk/ct/bottles/cans multiply. WEIGHT multipacks are ambiguous and
+--     flagged low: "12 ct / 1.2 oz" (bars) is per item, but "8 ct / 13 oz"
+--     (Texas Toast) and "18 pk / 12.7 oz" (Babybel) are totals — found in the
+--     2026-11-15 spot check, where the per-item reading was 8-44x too big.
+--     "8 slices / 6 oz" (cheese) is the TOTAL, so slices/sticks don't
+--     multiply.
 --   Walmart has no size field; the size is in NAME ("..., 15.25 oz",
 --     "24 fl oz Jar"). The LAST weight/volume token is used. "N-Pack (X oz
 --     Each)" multiplies. A name with a count AND one weight but no "each"
@@ -149,6 +152,8 @@ select
         -- through to 'high' for size-less products ("bath towel")
         when u.UNIT_BASIS is null and not (p.N_MEASURES = 0 and coalesce(p.COUNT_NUMBER, 0) > 0) then 'none'
         when coalesce(p.MEASURE_NUMBER, p.COUNT_NUMBER) <= 0 then 'none'
+        -- weight multipack: per-item vs total can't be told from the text
+        when p.RETAILER = 'kroger' and p.ITEMS_IN_PACKAGE > 1 and u.UNIT_BASIS = 'oz' then 'low'
         when p.RETAILER = 'kroger' then 'high'
         -- Walmart: count-only, or one weight/volume with no competing count
         when p.N_MEASURES = 0 then iff(p.N_COUNTS = 1, 'high', 'low')

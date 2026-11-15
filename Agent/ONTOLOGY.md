@@ -111,3 +111,22 @@ last collection, history-based timing, baskets, and category trends.
 Out of scope: nutrition or medical advice, other retailers, coupons, loyalty or
 membership pricing, delivery fees, forecasts beyond 6 weeks, live in-store stock
 guarantees.
+
+## Additions 2026-11-15
+
+**Product Type** — what an item *is*, as a short lowercase noun phrase
+("peanut butter", "whole turkey", "turkey lunch meat", "cat food"), independent
+of brand, flavor and size. Produced per food product by a Cortex model
+(`GROCERY_ML.PRODUCT_TYPE`; 3,488 types) and carried on Product as
+`PRODUCT_TYPE`. Like-for-like comparisons that are not exact-UPC matches —
+per-ounce rankings, store-brand savings, substitutes, "similar items" — are
+made *within* a product type. Non-food products have no type.
+
+**Shopper** — the person the agent serves (today one: `CURRENT_USER()`). The
+agent remembers, per shopper: Preferences (home ZIP, preferred Kroger stores,
+free-text notes), named Shopping Lists (items as typed, optionally resolved to
+a Product), Price Watches (a Product and an optional target price; checked
+weekly, raising Price Alerts when the lowest current price is at or below the
+target or at a historic low), and Feedback on answers (1–5). This state lives
+in hybrid tables in `GROCERY_APP` and is read and written only through the
+agent's tools; the price marts remain read-only for the agent.

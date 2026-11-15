@@ -42,6 +42,14 @@ ALTER WAREHOUSE GROCERY_AGENT_WH SET RESOURCE_MONITOR = GROCERY_AGENT_MONITOR;
 
 GRANT USAGE ON WAREHOUSE GROCERY_AGENT_WH TO ROLE GROCERY_AGENT_USER;
 
+-- Concurrency: multi-cluster scaling is NOT available on this account
+-- (Standard edition — "feature 'MULTI_CLUSTER_WAREHOUSES' not enabled",
+-- 2026-11-15). If WAREHOUSE_LOAD_HISTORY shows AVG_QUEUED_LOAD > 0 for the
+-- agent warehouse, the options are: resize (SMALL doubles concurrent slots),
+-- raise MAX_CONCURRENCY_LEVEL (default 8; smaller per-query share), or move
+-- to Enterprise and run:
+--   ALTER WAREHOUSE GROCERY_AGENT_WH SET MIN_CLUSTER_COUNT = 1 MAX_CLUSTER_COUNT = 3 SCALING_POLICY = 'STANDARD';
+
 -- Forecast training/forecasting only (already created 2026-11-15, ahead of
 -- the rest of this script). Medium, because SNOWFLAKE.ML.FORECAST
 -- parallelizes multi-series training across nodes — the first attempt on
@@ -65,7 +73,8 @@ CREATE SCHEMA IF NOT EXISTS GROCERYDBTPROJECT.GROCERY_SEMANTIC
 CREATE SCHEMA IF NOT EXISTS GROCERYDBTPROJECT.GROCERY_ML
     COMMENT = 'Price forecast model, training view, forecast output';
 
-GRANT OWNERSHIP ON SCHEMA GROCERYDBTPROJECT.GROCERY_ML TO ROLE GROCERY_ML_ROLE COPY CURRENT GRANTS;
+-- Ownership of GROCERY_ML moves in section 5 (it is a change to a live
+-- object, not an additive grant).
 
 ------------------------------------------------------------------------------
 -- 4. Agent user: read marts + semantic layer only
@@ -104,6 +113,7 @@ GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO ROLE GROCERY_ML_ROLE;
 -- `role:` in ~/.dbt/profiles.yml (targets dev and sandbox). Dynamic tables keep
 -- refreshing under their new owner, which needs warehouse usage.
 --
+-- GRANT OWNERSHIP ON SCHEMA GROCERYDBTPROJECT.GROCERY_ML TO ROLE GROCERY_ML_ROLE COPY CURRENT GRANTS;
 -- GRANT USAGE ON WAREHOUSE COMPUTE_WH TO ROLE GROCERY_TRANSFORMER;
 -- GRANT USAGE, CREATE SCHEMA ON DATABASE GROCERYDBTPROJECT TO ROLE GROCERY_TRANSFORMER;
 -- GRANT USAGE ON SCHEMA GROCERYDBTPROJECT.GROCERY_RAW_KROGER TO ROLE GROCERY_TRANSFORMER;
