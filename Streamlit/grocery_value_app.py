@@ -26,6 +26,22 @@ try:  # only available inside Streamlit in Snowflake
 except ImportError:  # local preview: chat is disabled, SQL tabs still work
     _snowflake = None
 
+# The Streamlit runtime inside Snowflake predates st.chat_input/st.chat_message
+# (1.24), st.dataframe(hide_index=) (1.23) and st.rerun (1.27), so the app
+# uses only older APIs: a form for questions, markdown for the conversation,
+# and the wrappers below.
+def show_df(df, **kwargs):
+    kwargs.setdefault("use_container_width", True)
+    try:
+        st.dataframe(df, hide_index=True, **kwargs)
+    except TypeError:
+        st.dataframe(df, **kwargs)
+
+
+def rerun():
+    (getattr(st, "rerun", None) or st.experimental_rerun)()
+
+
 DB = "GROCERYDBTPROJECT"
 MARTS = f"{DB}.GROCERY_MARTS"
 SEM = f"{DB}.GROCERY_SEMANTIC"
@@ -204,28 +220,30 @@ with tab_ask:
 
     if "chat" not in st.session_state:
         st.session_state["chat"] = []  # list of {"role", "text", "tools"}
+
+    with st.form("ask_form", clear_on_submit=True):
+        typed = st.text_input("Your question", placeholder="Ask about prices, deals, stores, timing, or a shopping list")
+        submitted = st.form_submit_button("Ask")
+    question = (typed.strip() if submitted and typed else None) or st.session_state.pop("pending_question", None)
+
+    if question:
+        st.session_state["chat"].append({"role": "user", "text": question})
+        api_messages = [{"role": m["role"], "content": [{"type": "text", "text": m["text"]}]} for m in st.session_state["chat"]]
+        with st.spinner("Checking prices..."):
+            answer, tools = ask_agent(api_messages)
+        st.session_state["chat"].append({"role": "assistant", "text": answer, "tools": tools})
+
     for m in st.session_state["chat"]:
-        with st.chat_message(m["role"]):
+        if m["role"] == "user":
+            st.markdown(f"**You:** {m['text']}")
+        else:
             st.markdown(m["text"])
             if m.get("tools"):
                 st.caption("Tools used: " + ", ".join(m["tools"]))
-
-    question = st.chat_input("Ask about prices, deals, stores, timing, or a shopping list") or st.session_state.pop("pending_question", None)
-    if question:
-        st.session_state["chat"].append({"role": "user", "text": question})
-        with st.chat_message("user"):
-            st.markdown(question)
-        api_messages = [{"role": m["role"], "content": [{"type": "text", "text": m["text"]}]} for m in st.session_state["chat"]]
-        with st.chat_message("assistant"):
-            with st.spinner("Checking prices..."):
-                answer, tools = ask_agent(api_messages)
-            st.markdown(answer)
-            if tools:
-                st.caption("Tools used: " + ", ".join(tools))
-        st.session_state["chat"].append({"role": "assistant", "text": answer, "tools": tools})
+            st.markdown("---")
     if st.session_state["chat"] and st.button("Clear conversation"):
         st.session_state["chat"] = []
-        st.rerun()
+        rerun()
 
 # ---------------------------------------------------------------- Look up
 with tab_lookup:
@@ -271,15 +289,14 @@ with tab_lookup:
                 x = cross_retailer(c["UPC_A"])
                 if not x.empty:
                     st.markdown("**Kroger vs Walmart (identical product)**")
-                    st.dataframe(x, use_container_width=True, hide_index=True)
+                    show_df(x)
 
             st.markdown("**Price by store**")
             ps = prices_by_store(key)
             if ps.empty:
                 st.info("No current price at any store (not listed in the latest collection).")
             else:
-                st.dataframe(ps.style.format({"CURRENT_PRICE": "${:.2f}", "CURRENT_REGULAR_PRICE": "${:.2f}", "TRAILING_LOW_PRICE": "${:.2f}", "TRAILING_MEDIAN_PRICE": "${:.2f}", "CHANGE_4W_PCT": "{:+.1%}"}, na_rep="—"),
-                             use_container_width=True, hide_index=True)
+                show_df(ps.style.format({"CURRENT_PRICE": "${:.2f}", "CURRENT_REGULAR_PRICE": "${:.2f}", "TRAILING_LOW_PRICE": "${:.2f}", "TRAILING_MEDIAN_PRICE": "${:.2f}", "CHANGE_4W_PCT": "{:+.1%}"}, na_rep="—"))
             hist = price_history(key)
             if len(hist) > 1:
                 st.markdown("**Price history (weekly; missing weeks were not collected)**")
@@ -332,7 +349,7 @@ with tab_basket:
         m3.metric("Split (Walmart + one Kroger)", f"${split['total']:.2f}" if split.get("total") is not None else "—", f"saves ${split.get('savings_vs_best_single_store') or 0:.2f}" if split else None)
 
         st.markdown("**Store totals** (compare only rows with the same items found)")
-        st.dataframe(pd.DataFrame(res.get("store_totals") or []), use_container_width=True, hide_index=True)
+        show_df(pd.DataFrame(res.get("store_totals") or []))
 
         st.markdown("**What was matched** — check these; a match is the best search hit with a current price")
         rows = []
@@ -340,10 +357,10 @@ with tab_basket:
             k, w = m.get("kroger") or {}, m.get("walmart") or {}
             rows.append({"item": m.get("item"), "Kroger match": k.get("product"), "Kroger size": k.get("size"), "Walmart match": w.get("product"),
                          "identical at both": bool(k.get("identical_at_walmart"))})
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        show_df(pd.DataFrame(rows))
         if split.get("lines"):
             st.markdown("**Where to buy each item in the split**")
-            st.dataframe(pd.DataFrame(split["lines"]), use_container_width=True, hide_index=True)
+            show_df(pd.DataFrame(split["lines"]))
         if res.get("missing"):
             st.warning("Not priced: " + "; ".join(f"{m['item']} ({', '.join(v for k, v in m.items() if k != 'item' and v)})" for m in res["missing"]))
 
@@ -362,7 +379,7 @@ with tab_basket:
                          + ("; shelf-stable and a good price — stock up." if s["IS_STOCK_UP_CANDIDATE"] else "."))
             ps = prices_by_store(pk)
             if not ps.empty:
-                st.dataframe(ps[["STORE_NAME", "CITY", "CURRENT_PRICE", "IS_ON_PROMO", "DEAL_QUALITY", "TRAILING_MEDIAN_PRICE", "IS_AT_HISTORIC_LOW"]], use_container_width=True, hide_index=True)
+                show_df(ps[["STORE_NAME", "CITY", "CURRENT_PRICE", "IS_ON_PROMO", "DEAL_QUALITY", "TRAILING_MEDIAN_PRICE", "IS_AT_HISTORIC_LOW"]])
             hist = price_history(pk)
             if len(hist) > 1:
                 st.line_chart(hist.set_index("PRICE_WEEK")[["TYPICAL_PRICE", "LOWEST_PRICE"]])
@@ -376,23 +393,23 @@ with tab_deals:
     d1, d2 = st.columns(2)
     with d1:
         st.markdown("**Genuine deals this week** (promo well below the usual regular price, not routine)")
-        st.dataframe(q(f"""
+        show_df(q(f"""
             SELECT p.RETAILER, p.PRODUCT_NAME, s.STORE_NAME, sp.CURRENT_PRICE, sp.CURRENT_REGULAR_PRICE, sp.CURRENT_DISCOUNT_PCT
             FROM {MARTS}.DBT_FCT_PRODUCT_PRICE_SUMMARY sp
             JOIN {MARTS}.DBT_DIM_PRODUCT p ON p.PRODUCT_KEY = sp.PRODUCT_KEY
             JOIN {MARTS}.DBT_DIM_STORE s ON s.STORE_ID = sp.STORE_ID
             WHERE sp.IS_CURRENTLY_LISTED AND sp.DEAL_QUALITY = 'GENUINE' AND p.IS_FOOD
             ORDER BY sp.CURRENT_DISCOUNT_PCT DESC LIMIT 25
-        """), use_container_width=True, hide_index=True)
+        """))
     with d2:
         st.markdown("**Biggest 4-week price drops (food, typical store)**")
-        st.dataframe(q(f"""
+        show_df(q(f"""
             SELECT p.RETAILER, p.PRODUCT_NAME, r.MEDIAN_CURRENT_PRICE, r.MEDIAN_CHANGE_4W_PCT, r.REF_WEEK_4W
             FROM {MARTS}.DBT_FCT_PRODUCT_PRICE_ROLLUP r
             JOIN {MARTS}.DBT_DIM_PRODUCT p ON p.PRODUCT_KEY = r.PRODUCT_KEY
             WHERE p.IS_FOOD AND r.MEDIAN_CHANGE_4W_PCT IS NOT NULL
             ORDER BY r.MEDIAN_CHANGE_4W_PCT LIMIT 25
-        """), use_container_width=True, hide_index=True)
+        """))
     st.markdown("**Category price index** (base week = 100; gaps are weeks with no collection)")
     cats = q(f"SELECT DISTINCT COMMON_CATEGORY FROM {MARTS}.DBT_FCT_CATEGORY_PRICE_INDEX_WEEKLY WHERE IS_FOOD_CATEGORY ORDER BY 1")["COMMON_CATEGORY"].tolist()
     cat = st.selectbox("Category", cats, index=cats.index("Dairy") if "Dairy" in cats else 0)
