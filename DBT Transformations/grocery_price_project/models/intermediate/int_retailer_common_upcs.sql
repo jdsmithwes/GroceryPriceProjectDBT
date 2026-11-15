@@ -1,4 +1,14 @@
-{{ config(materialized='view', schema='intermediate_common') }}
+{{ config(
+    materialized='dynamic_table',
+    target_lag='24 hours',
+    snowflake_warehouse='COMPUTE_WH',
+    refresh_mode='FULL',
+    schema='intermediate_common'
+) }}
+
+-- Dynamic table, not a view: the agent marts are dynamic tables, and
+-- Snowflake won't let a dynamic table read a view built on other dynamic
+-- tables (error 002727). Reads by the UPC scripts are unaffected.
 
 -- One row per UPC carried by both Kroger and Walmart. Kroger's PRODUCT_ID is
 -- the UPC without its check digit, zero-padded to 13 digits, so it matches the

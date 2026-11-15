@@ -35,3 +35,26 @@ seeds:
       - name: SOURCE_CATEGORY
         data_tests:
           - not_null
+
+  - name: zip_centroids_ga
+    description: >
+      Georgia ZIP Code Tabulation Area centroids from the US Census Bureau 2025
+      Gazetteer (2025_Gaz_zcta_national.txt, internal point lat/long), filtered
+      to Georgia ZIP prefixes 300–319 and 398–399. Lets the agent answer
+      "nearest Kroger to ZIP 30318" with HAVERSINE against dim_store. ZCTAs
+      approximate USPS ZIP codes; PO-box-only ZIPs have no ZCTA and won't match.
+    config:
+      column_types:
+        ZIP_CODE: varchar
+        LATITUDE: number(9,6)
+        LONGITUDE: number(9,6)
+    columns:
+      - name: ZIP_CODE
+        description: "5-digit ZCTA code, kept as text so leading characters are preserved."
+        data_tests:
+          - not_null
+          - unique
+      - name: LATITUDE
+        description: "Internal-point latitude of the ZCTA."
+      - name: LONGITUDE
+        description: "Internal-point longitude of the ZCTA."

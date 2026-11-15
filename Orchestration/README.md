@@ -255,6 +255,14 @@ service's permission was independently absent here.
   and no CloudTrail `RunTask` events to find. Also worth a glance:
   `JOB_PERFORMANCE.ORCHESTRATION_JOB_RUNS` only records runs that *started*,
   so a silent week there means "check the scheduler," not "nothing to load."
+  **Outcome**: after both schedules were re-saved (`update-schedule`, adding
+  the DLQ) on 2026-11-15, a one-off `test_infra` schedule launched its task
+  cleanly (1 attempt, 0 errors) — the drop stopped, but the root cause was
+  never observed. If it recurs, the DLQ message will name it. Diagnostic
+  shortcut that worked: the `AWS/Scheduler` metrics
+  (`InvocationAttemptCount`, `TargetErrorCount`, `InvocationDroppedCount`,
+  `InvocationsSentToDeadLetterCount`) at 5-minute granularity around the
+  fire time.
 - **One-off triggers outside the regular weekly cadence**: don't just
   `run-task` and hope you remember to finish it manually — create a
   single-fire EventBridge Schedule instead, same `Target` shape as the two
