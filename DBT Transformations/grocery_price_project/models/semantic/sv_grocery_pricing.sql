@@ -60,6 +60,11 @@
     "sql": "SELECT p.retailer, p.product_name, p.brand, p.package_quantity, p.unit_basis, r.min_current_price, r.min_unit_price, r.parse_confidence FROM __product_prices r JOIN __products p ON r.product_key = p.product_key WHERE p.product_type = 'peanut butter' AND r.unit_basis = 'oz' AND r.parse_confidence = 'high' ORDER BY r.min_unit_price ASC LIMIT 15"
   },
   {
+    "name": "historic_lows_this_week",
+    "question": "Which items are at their lowest price ever this week?",
+    "sql": "SELECT p.retailer, p.product_name, r.min_current_price, r.all_time_low_price, r.stores_at_historic_low, r.stores_listed, r.max_weeks_observed FROM __product_prices r JOIN __products p ON r.product_key = p.product_key WHERE r.stores_at_historic_low > 0 AND p.is_food ORDER BY r.stores_at_historic_low DESC, r.min_current_price LIMIT 20"
+  },
+  {
     "name": "similar_items_by_type",
     "question": "What turkey products do you have prices for, grouped by type?",
     "sql": "SELECT p.product_type, p.retailer, COUNT(*) AS products, MIN(r.min_current_price) AS lowest_price, MEDIAN(r.median_current_price) AS typical_price FROM __product_prices r JOIN __products p ON r.product_key = p.product_key WHERE p.product_type ILIKE '%turkey%' AND p.is_food GROUP BY 1, 2 ORDER BY products DESC"

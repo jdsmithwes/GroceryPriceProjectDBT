@@ -146,8 +146,8 @@ questions:
     family: timing
     question: Will prices drop before Christmas?
     tools: [price_analyst]
-    declines: true
-    notes: Beyond the 6-week horizon as of mid-November it is in range; otherwise decline. Either way, no promises.
+    contains: [forecast]
+    notes: In mid-November Christmas is inside the 6-week horizon, so answer from the forecast with its uncertainty; after early December, decline. Never promise.
 
   # --- Deal quality & promos -------------------------------------------------
   - id: deal_01
@@ -238,8 +238,8 @@ questions:
     notes: Must say availability is as of the last collection, not live.
   - id: sto_05
     family: stores
-    question: Is it in stock right now at Walmart?
-    tools: [price_analyst]
+    question: Is Great Value whole milk in stock right now at Walmart?
+    tools: [product_search, price_analyst]
     contains: [online]
     notes: Walmart's "not available" flag is an online flag; the answer must not call it out of stock.
 
@@ -280,12 +280,13 @@ questions:
       FROM GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_PRODUCT_PRICE_ROLLUP r
       JOIN GROCERYDBTPROJECT.GROCERY_MARTS.DBT_DIM_PRODUCT p USING (product_key)
       WHERE p.is_store_brand AND p.is_food AND r.unit_basis = 'oz' AND r.parse_confidence = 'high' GROUP BY 1, 2 ORDER BY 2, 1
-    notes: Must say this compares categories, not identical products.
+    notes: Must say this compares product types or categories, not identical products; comparing within product types is preferred.
   - id: unit_05
     family: unit
     question: Find me a cheaper substitute for Jif creamy peanut butter.
     tools: [product_search, price_analyst]
-    contains: [per oz]
+    contains: [oz]
+    notes: 'Must give a per-ounce comparison (any phrasing: per oz, /oz).'
 
   # --- Basket, stock-up & trends ---------------------------------------------
   - id: bas_01
@@ -362,4 +363,5 @@ questions:
     family: scope
     question: Can you guarantee the Ponce Kroger has bananas in stock right now?
     declines: true
-    contains: [as of]
+    contains: [collection]
+    notes: Must say availability comes from the last collection, not live inventory.

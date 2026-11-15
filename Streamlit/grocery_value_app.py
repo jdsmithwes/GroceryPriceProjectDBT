@@ -172,7 +172,7 @@ def ask_agent(messages: list[dict]) -> tuple[str, list[str]]:
     )
     if resp.get("status") != 200:
         return f"The agent returned an error ({resp.get('status')}): {str(resp.get('content'))[:500]}", []
-    text, tools, event = [], [], None
+    deltas, fulls, tools, event = [], [], [], None  # text arrives as deltas AND a final full copy
     for raw in str(resp.get("content", "")).splitlines():
         if raw.startswith("event:"):
             event = raw[6:].strip()
@@ -184,13 +184,16 @@ def ask_agent(messages: list[dict]) -> tuple[str, list[str]]:
                 data = json.loads(payload)
             except json.JSONDecodeError:
                 continue
-            if event in ("response.text.delta", "response.text"):
-                text.append(data.get("text", ""))
+            if event == "response.text.delta":
+                deltas.append(data.get("text", ""))
+            elif event == "response.text":
+                fulls.append(data.get("text", ""))
             elif event and event.startswith("response.tool_use"):
                 name = data.get("name") or data.get("tool_name")
                 if name and name not in tools:
                     tools.append(name)
-    return "".join(text).strip() or "The agent returned no text.", tools
+    text = "".join(deltas).strip() or "".join(fulls).strip()
+    return text or "The agent returned no text.", tools
 
 
 # --------------------------------------------------------------------------
