@@ -326,7 +326,8 @@ with tab_ask:
         if m["role"] == "user":
             st.markdown(f"**You:** {m['text']}")
         else:
-            st.markdown(m["text"])
+            # escape $ so Streamlit's markdown does not treat "$3.99 ... $6.99" as LaTeX
+            st.markdown(m["text"].replace("$", "\\$"))
             if m.get("tools"):
                 st.caption("Tools used: " + ", ".join(m["tools"]))
             st.markdown("---")
