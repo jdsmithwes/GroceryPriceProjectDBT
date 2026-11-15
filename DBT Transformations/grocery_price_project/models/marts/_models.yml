@@ -317,3 +317,108 @@ models:
         description: "Walmart clearance flag."
       - name: DATA_AS_OF
         description: "Collection timestamp — say 'as of' this in answers."
+
+  - name: fct_product_price_weekly_series
+    description: >
+      One price per product per observed week — the shared input for the
+      buy-signal rule and the ML forecast. Kroger: median effective price
+      across stores observed that week; Walmart: its national price.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [PRODUCT_KEY, PRICE_WEEK]
+    columns:
+      - name: PRODUCT_KEY
+        description: "RETAILER:PRODUCT_ID."
+        data_tests: [not_null]
+      - name: PRICE_WEEK
+        description: "Monday of the collection week."
+      - name: EFFECTIVE_PRICE
+        description: "Typical effective price that week (Kroger: median across stores)."
+        data_tests: [not_null]
+      - name: STORES_OBSERVED
+        description: "Stores with a price that week."
+      - name: STORES_ON_PROMO
+        description: "Stores on promo that week."
+
+  - name: fct_buy_recommendation
+    description: >
+      "Is now a good time to buy X?" — one row per product. RULE_SIGNAL
+      (price vs the item's own history) decides; the ML forecast is a second
+      opinion. Present RECOMMENDATION with its evidence: current price vs
+      HISTORY_LOW/MEDIAN, WEEKS_OBSERVED, and — when FORECAST_DIRECTION is
+      LOWER — RETURN_BY_WEEK with the forecast interval. Kroger rows describe
+      the typical (median) store price. Use only IS_CURRENTLY_LISTED rows.
+    columns:
+      - name: PRODUCT_KEY
+        description: "RETAILER:PRODUCT_ID."
+        data_tests: [not_null, unique]
+      - name: IS_CURRENTLY_LISTED
+        description: "TRUE if priced in the retailer's latest collection week."
+      - name: CURRENT_PRICE
+        description: "Current typical price (Kroger: median across stores)."
+      - name: WEEKS_OBSERVED
+        description: "Observed weeks in the trailing history window."
+      - name: HISTORY_LOW_PRICE
+        description: "Lowest weekly price in the trailing history."
+      - name: HISTORY_MEDIAN_PRICE
+        description: "Typical weekly price in the trailing history."
+      - name: HISTORY_P25_PRICE
+        description: "25th percentile weekly price."
+      - name: HISTORY_P75_PRICE
+        description: "75th percentile weekly price."
+      - name: RULE_SIGNAL
+        description: "GOOD_PRICE, HIGH_PRICE, TYPICAL, STABLE_PRICE (never changes), INSUFFICIENT_HISTORY."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['GOOD_PRICE', 'HIGH_PRICE', 'TYPICAL', 'STABLE_PRICE', 'INSUFFICIENT_HISTORY']
+      - name: FORECAST_DIRECTION
+        description: "LOWER, HIGHER, FLAT vs today over the next 6 weeks; NONE if no fresh forecast (short or constant history)."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['LOWER', 'HIGHER', 'FLAT', 'NONE']
+      - name: FORECAST_LOW_PRICE
+        description: "Lowest raw forecast price in the next 6 weeks."
+      - name: FORECAST_LOW_PRICE_BOUNDED
+        description: "Forecast low floored at the item's observed low — the price the recommendation acts on. A forecast can point to a price the item has reached, not below it."
+      - name: IS_FORECAST_BELOW_HISTORY
+        description: "TRUE when the raw forecast went below any price observed — treat that forecast as tentative and say so."
+      - name: FORECAST_LOW_WEEK
+        description: "Week the forecast low is expected."
+      - name: FORECAST_LOW_LOWER_BOUND
+        description: "80% interval lower bound at the forecast low."
+      - name: FORECAST_LOW_UPPER_BOUND
+        description: "80% interval upper bound at the forecast low."
+      - name: FORECAST_INTERVAL_WIDTH_PCT
+        description: "Average interval width as a share of the forecast — higher = less confident. Say so when it's wide."
+      - name: RECOMMENDATION
+        description: "BUY_NOW, BUY_NOW_OR_WAIT (good price now, forecast expects lower by RETURN_BY_WEEK), WAIT, NEUTRAL, INSUFFICIENT_HISTORY."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['BUY_NOW', 'BUY_NOW_OR_WAIT', 'WAIT', 'NEUTRAL', 'INSUFFICIENT_HISTORY']
+      - name: RETURN_BY_WEEK
+        description: "Week to check back when the forecast expects a lower price."
+      - name: SIGNALS_AGREE
+        description: "TRUE when rule and forecast point the same way; FALSE when they diverge; null without a forecast."
+
+  - name: dim_forecast_scope
+    description: >
+      Products the weekly ML price forecast is trained on. Currently every
+      product carried by both retailers (identical UPC); widen by adding rows
+      with a new SCOPE_REASON. Kept deliberately small — training costs
+      ~0.002 credits per series per week.
+    columns:
+      - name: PRODUCT_KEY
+        description: "RETAILER:PRODUCT_ID."
+        data_tests: [not_null, unique]
+      - name: SCOPE_REASON
+        description: "Why the product is in scope: shared_product."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['shared_product']

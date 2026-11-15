@@ -64,17 +64,27 @@ median by a meaningful margin. `ORDINARY`: a routine promo the item gets often.
 `INFLATED_REFERENCE`: the "was" price (e.g. Walmart MSRP) sits above anything this
 item has actually sold for, so the advertised discount overstates the saving.
 
-**Rule signal** — current effective price vs the item's own history:
-`GOOD_PRICE` (at or below its 25th percentile, or a promo at/below its historic low),
-`HIGH_PRICE` (at or above its 75th percentile), `TYPICAL` (between),
-`INSUFFICIENT_HISTORY` (fewer than 6 weekly observations).
+**Typical price (for timing)** — one weekly price per product: Kroger's median across
+the stores observed that week, Walmart's national price. Rule and forecast both use it.
 
-**Forecast** — a Snowflake ML projection of the next 6 weeks of effective price, with an
-80% interval. A second opinion only; it never overrides the rule signal.
+**Rule signal** — current typical price vs the item's own trailing history:
+`GOOD_PRICE` (at its historic low, or at/below its 25th percentile *and* below its median),
+`HIGH_PRICE` (at/above its 75th percentile *and* above its median), `TYPICAL` (between),
+`STABLE_PRICE` (the price never changed — there's no better time to wait for),
+`INSUFFICIENT_HISTORY` (fewer than 6 weekly observations). The median conditions stop an
+item's usual price from reading as "good" just because it rarely goes on sale.
 
-**Recommendation** — `BUY_NOW` (rule good, forecast flat or rising), `BUY_NOW_OR_WAIT`
-(rule good, forecast expects lower; includes `RETURN_BY_WEEK`), `WAIT` (rule high,
-forecast expects lower), `NEUTRAL`, `INSUFFICIENT_HISTORY`.
+**Forecast** — a Snowflake ML projection of the next 6 weeks of typical price, with an
+80% interval, trained weekly on the forecast scope (today: products carried by both
+retailers) for items with 8+ observed weeks and at least one price change. A second
+opinion only; it never overrides the rule signal. A forecast may point to a price the
+item has actually sold at, never below its observed low; when the raw forecast went
+lower than that, the answer says the forecast is tentative.
+
+**Recommendation** — `BUY_NOW` (good price, forecast doesn't expect lower),
+`BUY_NOW_OR_WAIT` (good price, but the forecast expects lower by `RETURN_BY_WEEK`),
+`WAIT` (high price; `RETURN_BY_WEEK` when the forecast expects lower), `NEUTRAL`
+(typical or stable price — buy when needed), `INSUFFICIENT_HISTORY`.
 
 **Shelf-stable / stock-up candidate** — shelf-stable: Kroger temperature `ambient`, or a
 Walmart item in a shelf-stable Common Category. Stock-up candidate: shelf-stable and

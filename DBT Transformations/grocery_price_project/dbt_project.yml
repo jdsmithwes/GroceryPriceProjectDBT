@@ -26,6 +26,10 @@ vars:
   deal_genuine_discount_pct: 0.10   # promo at least this far below the item's median regular price
   deal_routine_promo_share: 0.50    # on promo in at least this share of observed weeks = routine
   deal_inflated_reference_ratio: 1.5  # Walmart MSRP this many times the highest sale price ever seen
+  buy_min_weeks_for_signal: 6       # fewer observed weeks = INSUFFICIENT_HISTORY
+  buy_good_percentile: 0.25         # at/below the item's own 25th percentile = GOOD_PRICE
+  buy_high_percentile: 0.75         # at/above its own 75th percentile = HIGH_PRICE
+  forecast_move_pct: 0.05           # forecast low must be 5%+ below today to count as "expected lower"
 
 seeds:
   # Builds seeds into '<your_schema_name>_raw'
