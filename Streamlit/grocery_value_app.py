@@ -45,6 +45,7 @@ def rerun():
 DB = "GROCERYDBTPROJECT"
 MARTS = f"{DB}.GROCERY_MARTS"
 SEM = f"{DB}.GROCERY_SEMANTIC"
+OPS = f"{DB}.GROCERY_OPS"
 APP = f"{DB}.GROCERY_APP"
 AGENT = "GROCERY_VALUE_AGENT"
 
@@ -296,7 +297,7 @@ with st.sidebar:
     st.divider()
     st.caption("History has no data for Oct 12 – Nov 8, 2026. Walmart is a ~1,400-item catalog slice. Availability is as of the last collection, not live.")
 
-tab_ask, tab_lookup, tab_basket, tab_deals = st.tabs(["Ask", "Look up an item", "My basket", "Deals & trends"])
+tab_ask, tab_lookup, tab_basket, tab_deals, tab_ops = st.tabs(["Ask", "Look up an item", "My basket", "Deals & trends", "Operations"])
 
 # ---------------------------------------------------------------- Ask
 with tab_ask:
@@ -506,3 +507,67 @@ with tab_deals:
     idx = q(f"SELECT RETAILER, PRICE_WEEK, PRICE_INDEX FROM {MARTS}.DBT_FCT_CATEGORY_PRICE_INDEX_WEEKLY WHERE COMMON_CATEGORY = {lit(cat)} ORDER BY 2")
     if not idx.empty:
         st.line_chart(idx.pivot(index="PRICE_WEEK", columns="RETAILER", values="PRICE_INDEX"))
+
+# ---------------------------------------------------------------- Operations (control plane)
+with tab_ops:
+    st.subheader("Operations control plane")
+    st.write("Every deployed agent, task, alert, pipe and app the ops layer watches; what the sensors found; what it costs. "
+             "Sensors decide, agents explain, humans act (month 1). Runbook: Agent/ops/README.md.")
+    try:
+        reg = q(f"""SELECT AGENT_NAME, KIND, DOMAIN, PLATFORM, SCHEDULE_TEXT, MODEL, ENABLED, LAST_RUN_AT, LAST_STATUS, IS_SILENT, PROMPT_VERSION
+                    FROM {OPS}.V_REGISTRY_STATUS ORDER BY IS_SILENT DESC, DOMAIN, KIND, AGENT_NAME""")
+        openf = q(f"""SELECT SEVERITY, DOMAIN, CHECK_NAME, SUBJECT, LEFT(MESSAGE, 160) AS MESSAGE, SOURCE, FIRST_SEEN_AT, EVENT_ID
+                      FROM {OPS}.OPS_EVENT WHERE STATUS = 'open'
+                      ORDER BY CASE SEVERITY WHEN 'CRIT' THEN 0 WHEN 'WARN' THEN 1 ELSE 2 END, FIRST_SEEN_AT DESC""")
+        runs = q(f"""SELECT STARTED_AT, KIND, AGENT_NAME, STATUS, MAX_SEVERITY, MODEL, INPUT_TOKENS, OUTPUT_TOKENS, EMAIL_SENT,
+                            TIMESTAMPDIFF(second, STARTED_AT, ENDED_AT) AS SECONDS
+                     FROM {OPS}.OPS_RUN ORDER BY STARTED_AT DESC LIMIT 40""")
+        cost = q(f"SELECT SUBJECT, METRIC_VALUE AS PROJECTED_PCT_OF_QUOTA, OBSERVED FROM {OPS}.V_CHECK_COST_PROJECTION ORDER BY SUBJECT")
+        policy = q(f"SELECT MODEL_TASK, MODEL, FALLBACK_MODEL, MAX_TOKENS, MONTHLY_TOKEN_BUDGET, ENABLED, RATIONALE, UPDATED_AT FROM {OPS}.MODEL_POLICY ORDER BY MODEL_TASK")
+    except Exception as e:
+        st.error(f"The ops schema is not readable from this app's role: {e}")
+        reg = openf = runs = cost = policy = pd.DataFrame()
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Components", len(reg), f"{int(reg['IS_SILENT'].sum()) if len(reg) else 0} silent", delta_color="inverse")
+    c2.metric("Open findings", len(openf), f"{int((openf['SEVERITY'] == 'CRIT').sum()) if len(openf) else 0} critical", delta_color="inverse")
+    if len(cost):
+        tot = cost[cost["SUBJECT"] == "TOTAL"].iloc[0]
+        obs = json.loads(tot["OBSERVED"]) if isinstance(tot["OBSERVED"], str) else tot["OBSERVED"]
+        c3.metric("Credits month-to-date", f"{obs.get('month_to_date_credits', 0):.1f} of 20", f"projecting {obs.get('projected_month_end_credits', 0):.1f}", delta_color="inverse")
+    c4.metric("Agent runs (last 40)", int((runs["KIND"] == "agent").sum()) if len(runs) else 0, f"{int(runs['EMAIL_SENT'].sum()) if len(runs) else 0} emails")
+
+    st.markdown("**Registry** — one row per deployed component; `IS_SILENT` means no run since 1.5× its expected interval")
+    show_df(reg)
+    st.markdown("**Open findings** (sensors decide severity; agents' reports are in the run log below)")
+    show_df(openf)
+    st.markdown("**Budget** (projected month-end as % of each quota)")
+    if len(cost):
+        show_df(cost[["SUBJECT", "PROJECTED_PCT_OF_QUOTA"]].style.format({"PROJECTED_PCT_OF_QUOTA": "{:.0f}%"}))
+    st.markdown("**Recent runs** — sensors, agents and tasks with model and tokens")
+    show_df(runs)
+
+    st.markdown("**Model policy** — which model does which job; change takes effect on the next run and is audited (CONFIG_AUDIT)")
+    show_df(policy)
+    with st.form("model_policy_form"):
+        p1, p2, p3 = st.columns([2, 2, 3])
+        task_choice = p1.selectbox("Task", policy["MODEL_TASK"].tolist() if len(policy) else [])
+        model_choice = p2.selectbox("Model", ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-sonnet-4-5", "llama3.3-70b", "llama3.1-70b", "llama3.1-8b"])
+        reason = p3.text_input("Reason (required, goes to the audit log)")
+        if st.form_submit_button("Change model") and task_choice and reason:
+            try:
+                r = call_proc(f"{OPS}.SP_SET_MODEL_POLICY", task_choice, model_choice, reason)
+                st.success(f"{task_choice} now uses {r.get('MODEL')} (audited).")
+            except Exception as e:
+                st.error(f"Change refused: {e}")
+
+    with st.form("ack_form"):
+        a1, a2 = st.columns([3, 1])
+        ev = a1.text_input("Acknowledge a finding (EVENT_ID)")
+        note = a2.text_input("Note")
+        if st.form_submit_button("Acknowledge") and ev:
+            try:
+                r = call_proc(f"{OPS}.SP_ACK_EVENT", ev, note or None)
+                st.success(f"acknowledged {r.get('acked')} finding(s)")
+            except Exception as e:
+                st.error(f"Could not acknowledge: {e}")

@@ -1,0 +1,16 @@
+{
+  "AlarmName": "grocery-ingest-friday-never-started",
+  "AlarmDescription": "The Friday 17:00 ET grocery-ingest schedule made no invocation attempt in the last 24 h (Scheduler dropped it, as in Oct 17 - Nov 14 2026). Snowflake cannot see a job that never started until Saturday; this can.",
+  "Namespace": "AWS/Scheduler",
+  "MetricName": "InvocationAttemptCount",
+  "Dimensions": [{"Name": "ScheduleGroup", "Value": "default"}, {"Name": "ScheduleName", "Value": "grocery-ingest-friday-full"}],
+  "Statistic": "Sum",
+  "Period": 86400,
+  "EvaluationPeriods": 1,
+  "Threshold": 1,
+  "ComparisonOperator": "LessThanThreshold",
+  "TreatMissingData": "breaching",
+  "AlarmActions": ["arn:aws:sns:us-east-1:573509103721:grocery-ops-alerts"],
+  "OKActions": [],
+  "Tags": [{"Key": "project", "Value": "grocery-price"}, {"Key": "layer", "Value": "ops"}]
+}

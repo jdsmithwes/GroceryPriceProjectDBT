@@ -175,6 +175,18 @@ def main() -> int:
 
     total = len(results)
     print(f"\n{passed}/{total} passed ({100 * passed / max(total, 1):.0f}%)")
+    # one row per question in GROCERY_APP.AGENT_RUN_LOG (SOURCE = eval) so the
+    # ops layer's eval_score sensor can trend the score without this file
+    try:
+        cur = conn.cursor()
+        cur.executemany(
+            "INSERT INTO GROCERYDBTPROJECT.GROCERY_APP.AGENT_RUN_LOG (SHOPPER_ID, SOURCE, QUESTION, TOOLS, LATENCY_MS, PASSED) "
+            "SELECT CURRENT_USER(), 'eval', %s, %s, %s, %s",
+            [(r["id"] + ": " + next(q["question"] for q in questions if q["id"] == r["id"]), json.dumps(r["tools"]), int(r["seconds"] * 1000), bool(r["pass"])) for r in results],
+        )
+        print(f"logged {len(results)} rows to GROCERY_APP.AGENT_RUN_LOG (source=eval)")
+    except Exception as e:  # logging must never fail the eval
+        print(f"could not log to AGENT_RUN_LOG: {e}")
     out = HERE / f"results_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"
     out.write_text(json.dumps({"schema": schema, "passed": passed, "total": total, "results": results}, indent=1))
     print(f"written {out}")

@@ -118,6 +118,33 @@ loop (`Agent/evals/`) and the weekly cost review; and a later Streamlit or
 Postgres-backed app reads the same tables. The analytical marts stay
 read-only for agents, as they should.
 
+## 4b. Operations layer (built 2026-11-15)
+
+The agentic operations layer that watches all of the above lives in schema
+`GROCERY_OPS` and runs as `GROCERY_OPS_ROLE` on its own X-Small warehouse under
+a 2-credit monitor. Its rule: **sensors decide, agents explain, humans act.**
+
+- **Sensors**: 25 SQL views (`V_CHECK_*`) with thresholds in `OPS_CHECK`, run
+  by `SP_RUN_SENSORS`; findings land in `OPS_EVENT` (fingerprint dedup),
+  metrics in `OPS_METRIC_DAILY`, every run in `OPS_RUN`. Hourly serverless
+  alerts cover the three things that cannot wait (job missing/failed, task
+  failed, monitor ≥ 75 %).
+- **Six agents, one procedure**: `SP_RUN_AGENT(domain)` builds an inline
+  `AGENT_RUN` request from `AGENT_REGISTRY` (instructions, tools) and
+  `MODEL_POLICY` (Haiku 5.5 for pattern checks, Sonnet 5.5 for diagnosis,
+  Opus 5.5 for weekly judgement). Agents see only sensor output, must cite
+  `EVENT_ID`s, and may only *name* a runbook action.
+- **Control plane**: `AGENT_REGISTRY` (every deployed component, model,
+  schedule, last run, silence flag), `MODEL_POLICY` and `OPS_CHECK` edited
+  through audited procedures, the Streamlit Operations tab, and the weekly
+  digest email. Runbook: `Agent/ops/README.md`.
+- **Independence**: the planned AWS Lambda watcher (`Orchestration/ops-watcher/`)
+  checks the supervisor's heartbeat from outside Snowflake.
+
+This is the Snowflake answer to "who runs the agents": the same platform
+that holds the data runs the sensors, the models and the audit trail, with
+one RBAC and one bill.
+
 ## 5. Governance checklist against the LTAP pattern
 
 - One catalog: all objects in `GROCERYDBTPROJECT`, documented through dbt
