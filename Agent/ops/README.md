@@ -9,7 +9,7 @@ a model, and what to do when something fires. Design and controls:
 
 **Owner / on-call:** the project owner (one person). Response target for a
 CRIT: one business day. Escalation path: Proton email → GitHub issue in this
-repo. Alerts and reports go to `owner@example.com` only.
+repo. Alerts and reports go to the owner's email (`alert_email` in `GROCERY_OPS.OPS_SETTING`) only.
 
 ## The one principle
 

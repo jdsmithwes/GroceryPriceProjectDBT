@@ -51,7 +51,7 @@ GRANT ROLE GROCERY_OPS_WATCHER TO USER SVC_OPS_WATCHER;
 ## AWS side (done 2026-11-15 from Claude Code after `iam-deployer-policy.json` was attached)
 
 1. Secrets Manager secret `grocery/ops-watcher` (JSON): `{"account": "<org-account>", "user": "SVC_OPS_WATCHER", "private_key_pem": "<watcher.p8 contents>", "warehouse": "GROCERY_OPS_WH"}`.
-2. SNS topic `grocery-ops-alerts`; subscribe `owner@example.com` and confirm.
+2. SNS topic `grocery-ops-alerts`; subscribe the owner's email and confirm.
 3. Lambda `grocery-ops-watcher`: Python 3.12, 256 MB, 60 s timeout, env `SECRET_ID=grocery/ops-watcher`, `SNS_TOPIC_ARN=<arn>`, `MAX_SILENCE_HOURS=26`; layer or bundle with `PyJWT` and `cryptography`; execution role: `secretsmanager:GetSecretValue` on that secret, `sns:Publish` on that topic, basic logs.
 4. EventBridge Scheduler: `cron(0 9 * * ? *)` in `America/New_York` → the Lambda (reuse the pattern in `../friday-schedule.json`; add a DLQ).
 5. Test: `aws lambda invoke --function-name grocery-ops-watcher out.json` → `{"ok": true, ...}`; then suspend `TASK_OPS_DAILY` for a day in sandbox-equivalent fashion or set `MAX_SILENCE_HOURS=0` once to see the email arrive.

@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS GROCERYDBTPROJECT.GROCERY_OPS.OPS_SETTING (
     KEY VARCHAR PRIMARY KEY, VALUE VARCHAR, DESCRIPTION VARCHAR, UPDATED_AT TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP()
 );
 MERGE INTO GROCERYDBTPROJECT.GROCERY_OPS.OPS_SETTING t USING (SELECT * FROM VALUES
-    ('alert_email', 'owner@example.com', 'Recipient of every ops email (must be a verified Snowflake user email)'),
+    ('alert_email', '<OWNER_EMAIL>', 'Recipient of every ops email (must be a verified Snowflake user email). Placeholder in the repo: set the real address before running, or UPDATE OPS_SETTING afterwards'),
     ('email_integration', 'EMAIL_INTEGRATION', 'Notification integration used by SYSTEM$SEND_EMAIL'),
     ('email_min_severity', 'WARN', 'Agents email only when the domain''s max severity is at least this; the weekly digest always sends'),
     ('autonomy_enabled', 'false', 'Month-2 switch; nothing acts while false')
