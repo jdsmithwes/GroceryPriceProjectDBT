@@ -1,0 +1,5 @@
+streamlit>=1.40
+snowflake-connector-python[pandas]>=3.12
+pandas>=2.0
+requests>=2.31
+cryptography>=42

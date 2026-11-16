@@ -6,9 +6,9 @@
 --   sed -E 's/GROCERY_(SEMANTIC|MARTS|ML|RAW)\./GROCERY_DEV_\1./g; s/GROCERY_AGENT_WH/COMPUTE_WH/g; /^-- PROD ONLY/,$d'
 --
 -- The agent lives with the project (GROCERY_SEMANTIC), not in
--- SNOWFLAKE_INTELLIGENCE.AGENTS. Snowflake Intelligence lists every agent the
--- role has USAGE on; if it does not appear there, create it in
--- SNOWFLAKE_INTELLIGENCE.AGENTS instead (same specification).
+-- SNOWFLAKE_INTELLIGENCE.AGENTS (that schema is deprecated for visibility).
+-- Snowflake Intelligence shows an agent only after an explicit
+-- ALTER SNOWFLAKE INTELLIGENCE ... ADD AGENT (see the end of this file).
 --
 -- Definitions behind the instructions: Agent/ONTOLOGY.md. Scope and decline
 -- list: the question catalog in the plan. Evaluation: Agent/evals/.
@@ -186,3 +186,6 @@ $$;
 
 -- PROD ONLY: let the agent role use it
 GRANT USAGE ON AGENT GROCERYDBTPROJECT.GROCERY_SEMANTIC.GROCERY_VALUE_AGENT TO ROLE GROCERY_AGENT_USER;
+-- Snowflake Intelligence (now "Snowflake CoWork") lists only agents added explicitly; the
+-- legacy SNOWFLAKE_INTELLIGENCE.AGENTS schema is deprecated for visibility. Added 2026-11-16.
+ALTER SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT ADD AGENT GROCERYDBTPROJECT.GROCERY_SEMANTIC.GROCERY_VALUE_AGENT;
