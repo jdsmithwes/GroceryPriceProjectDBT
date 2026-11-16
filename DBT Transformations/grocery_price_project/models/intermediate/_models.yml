@@ -123,7 +123,6 @@ models:
 
   - name: int_walmart_price_history
     config:
-      materialized: view
       group: walmart
     description: >
       SCD Type 2 price history derived from stg_walmart_product_catalog.
@@ -261,3 +260,27 @@ models:
         data_tests:
           - not_null
           - unique
+
+  - name: int_product_unit_size
+    description: >
+      Package size per product normalized to a unit basis (oz, fl_oz, ct),
+      parsed from Kroger SIZE (multipacks give per-item size: "4 pk / 12 fl
+      oz" = 48 fl oz; slices/sticks give the total) and the Walmart product
+      name (last weight/volume token; "N-Pack (X oz Each)" multiplies).
+      Validated 2026-11-15: Kroger 99.3% high confidence; Walmart 61% high,
+      9% low, 30% no size in the name.
+    columns:
+      - name: PRODUCT_KEY
+        description: "RETAILER:PRODUCT_ID."
+        data_tests: [not_null, unique]
+      - name: PACKAGE_QUANTITY
+        description: "Size in UNIT_BASIS units."
+      - name: UNIT_BASIS
+        description: "oz, fl_oz or ct."
+      - name: PARSE_CONFIDENCE
+        description: "high, low, none."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['high', 'low', 'none']

@@ -1,0 +1,367 @@
+# Golden questions for the grocery value agent.
+#
+# Each question has: family, the tool(s) expected, and a check. Checks:
+#   sql:      a query over the prod marts whose rows the answer must agree
+#             with (numbers within rounding; same top item / same verdict)
+#   contains: phrases the answer must include (any case)
+#   declines: true when the right answer is a brief refusal
+#   mentions_as_of: true when the answer must state a date/week
+#
+# Run with Agent/evals/run_evals.py (prints pass/fail per question; target
+# >= 90%). Questions that pass reliably become verified queries in the
+# semantic view (models/semantic/sv_grocery_pricing.sql).
+
+questions:
+
+  # --- Compare (Kroger vs Walmart, identical UPC) ---------------------------
+  - id: cmp_01
+    family: compare
+    question: Which products are cheaper at Walmart than at Kroger right now?
+    tools: [price_analyst]
+    sql: >
+      SELECT product_name, walmart_price, kroger_min_price, savings_vs_kroger_min
+      FROM GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_CROSS_RETAILER_PRICE_COMPARISON
+      WHERE is_priced_at_both AND cheaper_retailer = 'walmart'
+      ORDER BY savings_vs_kroger_min DESC LIMIT 10
+    contains: [identical, walmart]
+    mentions_as_of: true
+  - id: cmp_02
+    family: compare
+    question: Overall, is Kroger or Walmart cheaper for the products they both sell?
+    tools: [price_analyst]
+    sql: >
+      SELECT cheaper_retailer, COUNT(*) n
+      FROM GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_CROSS_RETAILER_PRICE_COMPARISON
+      WHERE is_priced_at_both GROUP BY 1
+    contains: [identical]
+  - id: cmp_03
+    family: compare
+    question: Is Cheerios cheaper at Kroger or Walmart?
+    tools: [product_search, price_analyst]
+    sql: >
+      SELECT product_name, walmart_price, kroger_min_price, kroger_median_price, kroger_cheapest_store_name, cheaper_retailer
+      FROM GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_CROSS_RETAILER_PRICE_COMPARISON
+      WHERE product_name ILIKE '%cheerios%' AND is_priced_at_both
+    notes: If no identical UPC exists, the answer must say the comparison is between comparable, not identical, items.
+  - id: cmp_04
+    family: compare
+    question: How many products do you have prices for at both Kroger and Walmart?
+    tools: [price_analyst]
+    sql: >
+      SELECT COUNT(*) FROM GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_CROSS_RETAILER_PRICE_COMPARISON WHERE is_priced_at_both
+  - id: cmp_05
+    family: compare
+    question: Which Kroger store has the lowest price on the products Walmart also sells?
+    tools: [price_analyst]
+    sql: >
+      SELECT kroger_cheapest_store_name, COUNT(*) n
+      FROM GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_CROSS_RETAILER_PRICE_COMPARISON
+      WHERE is_priced_at_both GROUP BY 1 ORDER BY n DESC LIMIT 5
+
+  # --- Movers (price changes) ------------------------------------------------
+  - id: mov_01
+    family: movers
+    question: Which food items dropped the most in price over the last 4 weeks?
+    tools: [price_analyst]
+    sql: >
+      SELECT p.retailer, p.product_name, r.median_change_4w_pct, r.ref_week_4w
+      FROM GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_PRODUCT_PRICE_ROLLUP r
+      JOIN GROCERYDBTPROJECT.GROCERY_MARTS.DBT_DIM_PRODUCT p USING (product_key)
+      WHERE p.is_food AND r.median_change_4w_pct IS NOT NULL
+      ORDER BY r.median_change_4w_pct LIMIT 10
+    contains: [week]
+    notes: Must cite the comparison week; a product must not appear once per store.
+  - id: mov_02
+    family: movers
+    question: What went up the most in price at Walmart over 8 weeks?
+    tools: [price_analyst]
+    sql: >
+      SELECT p.product_name, r.median_change_8w_pct, r.ref_week_8w
+      FROM GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_PRODUCT_PRICE_ROLLUP r
+      JOIN GROCERYDBTPROJECT.GROCERY_MARTS.DBT_DIM_PRODUCT p USING (product_key)
+      WHERE p.retailer = 'walmart' AND r.median_change_8w_pct IS NOT NULL
+      ORDER BY r.median_change_8w_pct DESC LIMIT 10
+  - id: mov_03
+    family: movers
+    question: How has the price of eggs changed at Kroger since August?
+    tools: [product_search, price_analyst]
+    sql: >
+      SELECT price_week, effective_price, stores_observed
+      FROM GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_PRODUCT_PRICE_WEEKLY_SERIES s
+      JOIN GROCERYDBTPROJECT.GROCERY_MARTS.DBT_DIM_PRODUCT p USING (product_key)
+      WHERE p.retailer = 'kroger' AND p.product_name ILIKE '%large eggs%' AND p.product_name ILIKE 'kroger%'
+      ORDER BY price_week
+    contains: [gap]
+    notes: Must mention the Oct 12 - Nov 8 collection gap rather than implying prices held.
+  - id: mov_04
+    family: movers
+    question: Which items are at their lowest price ever this week?
+    tools: [price_analyst]
+    sql: >
+      SELECT p.retailer, p.product_name, r.min_current_price, r.stores_at_historic_low
+      FROM GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_PRODUCT_PRICE_ROLLUP r
+      JOIN GROCERYDBTPROJECT.GROCERY_MARTS.DBT_DIM_PRODUCT p USING (product_key)
+      WHERE r.stores_at_historic_low > 0 AND p.is_food ORDER BY r.stores_at_historic_low DESC LIMIT 10
+    contains: [weeks]
+    notes: '"Ever" means since Aug 2026 (Kroger) / Sep 2026 (Walmart); the answer must say so.'
+
+  # --- Timing (rule + forecast) ----------------------------------------------
+  - id: tim_01
+    family: timing
+    question: Is now a good time to buy coffee?
+    tools: [product_search, price_analyst]
+    sql: >
+      SELECT p.retailer, p.product_name, b.rule_signal, b.recommendation, b.current_price, b.history_median_price, b.weeks_observed, b.return_by_week
+      FROM GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_BUY_RECOMMENDATION b
+      JOIN GROCERYDBTPROJECT.GROCERY_MARTS.DBT_DIM_PRODUCT p USING (product_key)
+      WHERE b.is_currently_listed AND p.is_food AND p.product_name ILIKE '%coffee%' ORDER BY b.recommendation LIMIT 10
+    contains: [history]
+    notes: Rule verdict first; forecast second; weeks of history stated.
+  - id: tim_02
+    family: timing
+    question: Which products should I wait to buy because the price is expected to drop?
+    tools: [price_analyst]
+    sql: >
+      SELECT p.product_name, b.current_price, b.forecast_low_price_bounded, b.return_by_week, b.forecast_interval_width_pct
+      FROM GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_BUY_RECOMMENDATION b
+      JOIN GROCERYDBTPROJECT.GROCERY_MARTS.DBT_DIM_PRODUCT p USING (product_key)
+      WHERE b.recommendation IN ('WAIT', 'BUY_NOW_OR_WAIT') ORDER BY b.return_by_week LIMIT 10
+    contains: [week]
+  - id: tim_03
+    family: timing
+    question: Should I buy Tide detergent now?
+    tools: [product_search, price_analyst]
+    sql: >
+      SELECT p.product_name, b.rule_signal, b.recommendation, b.weeks_observed
+      FROM GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_BUY_RECOMMENDATION b
+      JOIN GROCERYDBTPROJECT.GROCERY_MARTS.DBT_DIM_PRODUCT p USING (product_key)
+      WHERE p.product_name ILIKE '%tide%' AND b.is_currently_listed LIMIT 10
+  - id: tim_04
+    family: timing
+    question: What will the price of butter be next month?
+    tools: [price_analyst]
+    contains: [forecast]
+    notes: A 6-week forecast exists only for products carried by both retailers; the answer must say the forecast is tentative/uncertain and give the interval, or say no forecast exists for that product.
+  - id: tim_05
+    family: timing
+    question: Will prices drop before Christmas?
+    tools: [price_analyst]
+    contains: [forecast]
+    notes: In mid-November Christmas is inside the 6-week horizon, so answer from the forecast with its uncertainty; after early December, decline. Never promise.
+
+  # --- Deal quality & promos -------------------------------------------------
+  - id: deal_01
+    family: deals
+    question: Which sales right now are genuinely good deals?
+    tools: [price_analyst]
+    sql: >
+      SELECT p.product_name, s.store_id, sp.current_price, sp.current_regular_price, sp.current_discount_pct
+      FROM GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_PRODUCT_PRICE_SUMMARY sp
+      JOIN GROCERYDBTPROJECT.GROCERY_MARTS.DBT_DIM_PRODUCT p USING (product_key)
+      JOIN GROCERYDBTPROJECT.GROCERY_MARTS.DBT_DIM_STORE s ON s.store_id = sp.store_id
+      WHERE sp.is_currently_listed AND sp.deal_quality = 'GENUINE' AND p.is_food ORDER BY sp.current_discount_pct DESC LIMIT 10
+    contains: [genuine]
+  - id: deal_02
+    family: deals
+    question: Is the Walmart sale on item 229527 a real discount?
+    tools: [price_analyst]
+    sql: >
+      SELECT current_price, current_regular_price, deal_quality
+      FROM GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_PRODUCT_PRICE_SUMMARY
+      WHERE product_key = 'walmart:229527'
+    contains: [inflated]
+    notes: Known INFLATED_REFERENCE case ($7.74 vs $59.45 MSRP).
+  - id: deal_03
+    family: deals
+    question: How often does Coca-Cola go on sale at Kroger, and how deep is the discount?
+    tools: [product_search, price_analyst]
+    sql: >
+      SELECT p.product_name, MEDIAN(sp.promo_week_share), MEDIAN(sp.avg_promo_discount_pct), MEDIAN(sp.weeks_per_promo)
+      FROM GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_PRODUCT_PRICE_SUMMARY sp
+      JOIN GROCERYDBTPROJECT.GROCERY_MARTS.DBT_DIM_PRODUCT p USING (product_key)
+      WHERE p.retailer = 'kroger' AND p.product_name ILIKE 'coca-cola%' GROUP BY 1 LIMIT 5
+  - id: deal_04
+    family: deals
+    question: What share of Kroger food prices are on sale this week?
+    tools: [price_analyst]
+    sql: >
+      SELECT AVG(IFF(sp.is_on_promo, 1, 0))
+      FROM GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_PRODUCT_PRICE_SUMMARY sp
+      JOIN GROCERYDBTPROJECT.GROCERY_MARTS.DBT_DIM_PRODUCT p USING (product_key)
+      WHERE sp.is_currently_listed AND sp.retailer = 'kroger' AND p.is_food
+  - id: deal_05
+    family: deals
+    question: Show me Walmart clearance items.
+    tools: [price_analyst]
+    sql: >
+      SELECT p.product_name FROM GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_PRODUCT_AVAILABILITY_CURRENT a
+      JOIN GROCERYDBTPROJECT.GROCERY_MARTS.DBT_DIM_PRODUCT p USING (product_key) WHERE a.is_clearance LIMIT 10
+
+  # --- Store choice & availability -------------------------------------------
+  - id: sto_01
+    family: stores
+    question: Which Kroger stores are closest to 30318?
+    tools: [price_analyst]
+    sql: >
+      SELECT s.store_name, ROUND(HAVERSINE(z.latitude, z.longitude, s.latitude, s.longitude) * 0.621371, 1) miles
+      FROM GROCERYDBTPROJECT.GROCERY_MARTS.DBT_DIM_STORE s, GROCERYDBTPROJECT.GROCERY_RAW.DBT_ZIP_CENTROIDS_GA z
+      WHERE z.zip_code = '30318' AND s.retailer = 'kroger' ORDER BY miles LIMIT 5
+    contains: [Howell Mill]
+  - id: sto_02
+    family: stores
+    question: How much do Kroger prices differ between stores?
+    tools: [price_analyst]
+    sql: >
+      SELECT AVG(IFF(price_varies_by_store, 1, 0)) share_varying
+      FROM GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_PRODUCT_PRICE_ROLLUP WHERE retailer = 'kroger'
+  - id: sto_03
+    family: stores
+    question: Which Kroger store is cheapest for whole milk?
+    tools: [product_search, price_analyst]
+    sql: >
+      SELECT p.product_name, s.store_name, sp.current_price
+      FROM GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_PRODUCT_PRICE_SUMMARY sp
+      JOIN GROCERYDBTPROJECT.GROCERY_MARTS.DBT_DIM_PRODUCT p USING (product_key)
+      JOIN GROCERYDBTPROJECT.GROCERY_MARTS.DBT_DIM_STORE s ON s.store_id = sp.store_id
+      WHERE sp.is_currently_listed AND p.retailer = 'kroger' AND p.product_name ILIKE 'kroger%whole milk%' ORDER BY sp.current_price LIMIT 5
+  - id: sto_04
+    family: stores
+    question: Is Simple Truth almond milk in stock at the Ponce Kroger, and can I get it curbside?
+    tools: [product_search, price_analyst]
+    sql: >
+      SELECT p.product_name, a.availability_status, a.is_curbside_available, a.data_as_of
+      FROM GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_PRODUCT_AVAILABILITY_CURRENT a
+      JOIN GROCERYDBTPROJECT.GROCERY_MARTS.DBT_DIM_PRODUCT p USING (product_key)
+      JOIN GROCERYDBTPROJECT.GROCERY_MARTS.DBT_DIM_STORE s ON s.store_id = a.store_id
+      WHERE s.store_name ILIKE '%ponce%' AND p.product_name ILIKE 'simple truth%almond%milk%' LIMIT 5
+    mentions_as_of: true
+    notes: Must say availability is as of the last collection, not live.
+  - id: sto_05
+    family: stores
+    question: Is Great Value whole milk in stock right now at Walmart?
+    tools: [product_search, price_analyst]
+    contains: [online]
+    notes: Walmart's "not available" flag is an online flag; the answer must not call it out of stock.
+
+  # --- Unit price & store brands ---------------------------------------------
+  - id: unit_01
+    family: unit
+    question: What is the cheapest peanut butter per ounce?
+    tools: [price_analyst]
+    sql: >
+      SELECT p.retailer, p.product_name, r.min_unit_price, p.package_quantity
+      FROM GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_PRODUCT_PRICE_ROLLUP r
+      JOIN GROCERYDBTPROJECT.GROCERY_MARTS.DBT_DIM_PRODUCT p USING (product_key)
+      WHERE p.is_food AND p.product_name ILIKE '%peanut butter%' AND r.unit_basis = 'oz' AND r.parse_confidence = 'high'
+      ORDER BY r.min_unit_price LIMIT 10
+    contains: [per oz]
+    notes: 'Known gap: name matching includes peanut-butter cookies/ice cream until product types exist; answer should show the product names so the user can see that.'
+  - id: unit_02
+    family: unit
+    question: How much do I save per ounce buying Kroger brand cheese instead of a national brand?
+    tools: [price_analyst]
+    sql: >
+      SELECT p.is_store_brand, MEDIAN(r.median_unit_price)
+      FROM GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_PRODUCT_PRICE_ROLLUP r
+      JOIN GROCERYDBTPROJECT.GROCERY_MARTS.DBT_DIM_PRODUCT p USING (product_key)
+      WHERE p.retailer = 'kroger' AND p.primary_common_category = 'Dairy' AND p.product_name ILIKE '%cheese%'
+        AND r.unit_basis = 'oz' AND r.parse_confidence = 'high' GROUP BY 1
+  - id: unit_03
+    family: unit
+    question: Which is the better value, the 12-pack or the 24-pack of Coke?
+    tools: [product_search, price_analyst]
+    contains: [per fl oz]
+  - id: unit_04
+    family: unit
+    question: Is Great Value cheaper than Kroger brand for the same kinds of products?
+    tools: [price_analyst]
+    sql: >
+      SELECT p.retailer, p.primary_common_category, MEDIAN(r.median_unit_price)
+      FROM GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_PRODUCT_PRICE_ROLLUP r
+      JOIN GROCERYDBTPROJECT.GROCERY_MARTS.DBT_DIM_PRODUCT p USING (product_key)
+      WHERE p.is_store_brand AND p.is_food AND r.unit_basis = 'oz' AND r.parse_confidence = 'high' GROUP BY 1, 2 ORDER BY 2, 1
+    notes: Must say this compares product types or categories, not identical products; comparing within product types is preferred.
+  - id: unit_05
+    family: unit
+    question: Find me a cheaper substitute for Jif creamy peanut butter.
+    tools: [product_search, price_analyst]
+    contains: [oz]
+    notes: 'Must give a per-ounce comparison (any phrasing: per oz, /oz).'
+
+  # --- Basket, stock-up & trends ---------------------------------------------
+  - id: bas_01
+    family: basket
+    question: "Which store is cheapest for this list near 30318: whole milk, large eggs, Jif peanut butter, Cheerios, bananas?"
+    tools: [compare_basket]
+    contains: [matched]
+    notes: Must show the products it matched and the per-store totals; totals compared only with equal items found.
+  - id: bas_02
+    family: basket
+    question: Is it worth splitting that list between Walmart and Kroger?
+    tools: [compare_basket]
+    contains: [split]
+  - id: bas_03
+    family: basket
+    question: What shelf-stable items are worth stocking up on right now?
+    tools: [price_analyst]
+    sql: >
+      SELECT p.product_name, b.current_price, b.history_median_price
+      FROM GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_BUY_RECOMMENDATION b
+      JOIN GROCERYDBTPROJECT.GROCERY_MARTS.DBT_DIM_PRODUCT p USING (product_key)
+      WHERE b.is_stock_up_candidate AND p.is_food ORDER BY (b.history_median_price - b.current_price) / NULLIF(b.history_median_price, 0) DESC LIMIT 10
+  - id: bas_04
+    family: trends
+    question: Are dairy prices going up at Kroger?
+    tools: [price_analyst]
+    sql: >
+      SELECT price_week, price_index, change_vs_previous_pct, weeks_since_previous
+      FROM GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_CATEGORY_PRICE_INDEX_WEEKLY
+      WHERE retailer = 'kroger' AND common_category = 'Dairy' ORDER BY price_week
+    contains: [index]
+  - id: bas_05
+    family: trends
+    question: Which food category has gotten more expensive the most since August?
+    tools: [price_analyst]
+    sql: >
+      SELECT retailer, common_category, price_index
+      FROM GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_CATEGORY_PRICE_INDEX_WEEKLY
+      WHERE is_food_category QUALIFY price_week = MAX(price_week) OVER (PARTITION BY retailer, common_category) ORDER BY price_index DESC LIMIT 5
+
+  # --- Similar items -------------------------------------------------------------
+  - id: sim_01
+    family: similar
+    question: What does turkey cost with Thanksgiving coming up?
+    tools: [product_search, price_analyst]
+    contains: [whole turkey]
+    notes: Must separate whole turkeys, turkey parts/breast and turkey lunch meat, and must not include pet food.
+  - id: sim_02
+    family: similar
+    question: Show me all the sparkling waters and which is cheapest per fl oz.
+    tools: [product_search, price_analyst]
+    contains: [per fl oz]
+
+  # --- Out of scope (must decline briefly) ------------------------------------
+  - id: oos_01
+    family: scope
+    question: Is almond milk healthier than whole milk?
+    declines: true
+  - id: oos_02
+    family: scope
+    question: What does Publix charge for eggs?
+    declines: true
+    contains: [Kroger, Walmart]
+  - id: oos_03
+    family: scope
+    question: Are there any coupons for Tide this week?
+    declines: true
+  - id: oos_04
+    family: scope
+    question: What will eggs cost in March?
+    declines: true
+    notes: Beyond the 6-week horizon.
+  - id: oos_05
+    family: scope
+    question: Can you guarantee the Ponce Kroger has bananas in stock right now?
+    declines: true
+    contains: [collection]
+    notes: Must say availability comes from the last collection, not live inventory.

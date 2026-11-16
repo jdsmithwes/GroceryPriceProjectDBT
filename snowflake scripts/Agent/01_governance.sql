@@ -1,0 +1,130 @@
+-- Grocery value agent — Phase 5 governance: roles, warehouse, budget, grants.
+-- Review before running; run as ACCOUNTADMIN (role creation + resource monitors).
+-- Sections 1–4 are additive and safe. Section 5 (moving dbt off ACCOUNTADMIN)
+-- changes ownership of live objects — run it deliberately, on its own.
+
+USE ROLE ACCOUNTADMIN;
+
+------------------------------------------------------------------------------
+-- 1. Roles (least privilege; roll up to SYSADMIN per Snowflake convention)
+------------------------------------------------------------------------------
+CREATE ROLE IF NOT EXISTS GROCERY_TRANSFORMER
+    COMMENT = 'dbt: builds staging/intermediate/marts in GROCERYDBTPROJECT';
+CREATE ROLE IF NOT EXISTS GROCERY_ML_ROLE
+    COMMENT = 'Owns and runs the weekly price-forecast task in GROCERY_ML';
+CREATE ROLE IF NOT EXISTS GROCERY_AGENT_USER
+    COMMENT = 'Uses the grocery value agent: marts + semantic layer only, no raw/staging';
+
+GRANT ROLE GROCERY_TRANSFORMER TO ROLE SYSADMIN;
+GRANT ROLE GROCERY_ML_ROLE TO ROLE SYSADMIN;
+GRANT ROLE GROCERY_AGENT_USER TO ROLE SYSADMIN;
+GRANT ROLE GROCERY_AGENT_USER TO USER JDSMITHWES;
+
+------------------------------------------------------------------------------
+-- 2. Dedicated agent warehouse + monthly credit budget
+------------------------------------------------------------------------------
+CREATE WAREHOUSE IF NOT EXISTS GROCERY_AGENT_WH
+    WAREHOUSE_SIZE = XSMALL
+    AUTO_SUSPEND = 60
+    AUTO_RESUME = TRUE
+    INITIALLY_SUSPENDED = TRUE
+    COMMENT = 'Grocery value agent queries, Cortex Search refresh, forecast task';
+
+-- Quota is a starting point: tune after the first month of usage.
+CREATE RESOURCE MONITOR IF NOT EXISTS GROCERY_AGENT_MONITOR
+    WITH CREDIT_QUOTA = 10
+    FREQUENCY = MONTHLY
+    START_TIMESTAMP = IMMEDIATELY
+    TRIGGERS ON 75 PERCENT DO NOTIFY
+             ON 90 PERCENT DO SUSPEND
+             ON 100 PERCENT DO SUSPEND_IMMEDIATE;
+ALTER WAREHOUSE GROCERY_AGENT_WH SET RESOURCE_MONITOR = GROCERY_AGENT_MONITOR;
+
+GRANT USAGE ON WAREHOUSE GROCERY_AGENT_WH TO ROLE GROCERY_AGENT_USER;
+
+-- Concurrency: multi-cluster scaling is NOT available on this account
+-- (Standard edition — "feature 'MULTI_CLUSTER_WAREHOUSES' not enabled",
+-- 2026-11-15). If WAREHOUSE_LOAD_HISTORY shows AVG_QUEUED_LOAD > 0 for the
+-- agent warehouse, the options are: resize (SMALL doubles concurrent slots),
+-- raise MAX_CONCURRENCY_LEVEL (default 8; smaller per-query share), or move
+-- to Enterprise and run:
+--   ALTER WAREHOUSE GROCERY_AGENT_WH SET MIN_CLUSTER_COUNT = 1 MAX_CLUSTER_COUNT = 3 SCALING_POLICY = 'STANDARD';
+
+-- Forecast training/forecasting only (already created 2026-11-15, ahead of
+-- the rest of this script). Medium, because SNOWFLAKE.ML.FORECAST
+-- parallelizes multi-series training across nodes — the first attempt on
+-- X-Small COMPUTE_WH (6,733 series) ran 4h23m and cost ~4.7 credits before
+-- being cancelled. Always run forecasts scoped (SCOPE_TABLE, see
+-- 02_forecast.sql) and time a sample before widening the scope.
+CREATE WAREHOUSE IF NOT EXISTS GROCERY_ML_WH
+    WAREHOUSE_SIZE = MEDIUM
+    AUTO_SUSPEND = 60
+    AUTO_RESUME = TRUE
+    INITIALLY_SUSPENDED = TRUE
+    COMMENT = 'Grocery value agent: SNOWFLAKE.ML.FORECAST training/forecast only. Medium so multi-series training parallelizes; auto-suspends in 60s.';
+ALTER WAREHOUSE GROCERY_ML_WH SET RESOURCE_MONITOR = GROCERY_AGENT_MONITOR;
+GRANT USAGE ON WAREHOUSE GROCERY_ML_WH TO ROLE GROCERY_ML_ROLE;
+
+------------------------------------------------------------------------------
+-- 3. Schemas for the agent layer (GROCERY_MARTS is created by dbt)
+------------------------------------------------------------------------------
+CREATE SCHEMA IF NOT EXISTS GROCERYDBTPROJECT.GROCERY_SEMANTIC
+    COMMENT = 'Semantic view, Cortex Search service, agent tools';
+CREATE SCHEMA IF NOT EXISTS GROCERYDBTPROJECT.GROCERY_ML
+    COMMENT = 'Price forecast model, training view, forecast output';
+
+-- Ownership of GROCERY_ML moves in section 5 (it is a change to a live
+-- object, not an additive grant).
+
+------------------------------------------------------------------------------
+-- 4. Agent user: read marts + semantic layer only
+------------------------------------------------------------------------------
+GRANT USAGE ON DATABASE GROCERYDBTPROJECT TO ROLE GROCERY_AGENT_USER;
+GRANT USAGE ON SCHEMA GROCERYDBTPROJECT.GROCERY_MARTS TO ROLE GROCERY_AGENT_USER;
+GRANT USAGE ON SCHEMA GROCERYDBTPROJECT.GROCERY_SEMANTIC TO ROLE GROCERY_AGENT_USER;
+GRANT SELECT ON ALL TABLES IN SCHEMA GROCERYDBTPROJECT.GROCERY_MARTS TO ROLE GROCERY_AGENT_USER;
+GRANT SELECT ON ALL DYNAMIC TABLES IN SCHEMA GROCERYDBTPROJECT.GROCERY_MARTS TO ROLE GROCERY_AGENT_USER;
+GRANT SELECT ON FUTURE TABLES IN SCHEMA GROCERYDBTPROJECT.GROCERY_MARTS TO ROLE GROCERY_AGENT_USER;
+GRANT SELECT ON FUTURE DYNAMIC TABLES IN SCHEMA GROCERYDBTPROJECT.GROCERY_MARTS TO ROLE GROCERY_AGENT_USER;
+-- Semantic view, search service, agent, and basket procedure grants are added
+-- in 03–05 as each object is created.
+
+-- The forecast task reads the weekly price mart and writes GROCERY_ML.
+GRANT USAGE ON DATABASE GROCERYDBTPROJECT TO ROLE GROCERY_ML_ROLE;
+GRANT USAGE ON SCHEMA GROCERYDBTPROJECT.GROCERY_MARTS TO ROLE GROCERY_ML_ROLE;
+GRANT SELECT ON FUTURE DYNAMIC TABLES IN SCHEMA GROCERYDBTPROJECT.GROCERY_MARTS TO ROLE GROCERY_ML_ROLE;
+GRANT CREATE SNOWFLAKE.ML.FORECAST ON SCHEMA GROCERYDBTPROJECT.GROCERY_ML TO ROLE GROCERY_ML_ROLE;
+GRANT EXECUTE TASK ON ACCOUNT TO ROLE GROCERY_ML_ROLE;
+GRANT INSERT ON TABLE GROCERYDBTPROJECT.JOB_PERFORMANCE.ORCHESTRATION_JOB_RUNS TO ROLE GROCERY_ML_ROLE;
+GRANT USAGE ON SCHEMA GROCERYDBTPROJECT.JOB_PERFORMANCE TO ROLE GROCERY_ML_ROLE;
+
+-- Cortex functions: only the roles that need them. CORTEX_USER is granted to
+-- PUBLIC by default; revoking that is the standard hardening step, but it
+-- removes Cortex from every other role too — confirm nothing else relies on it.
+GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO ROLE GROCERY_AGENT_USER;
+GRANT DATABASE ROLE SNOWFLAKE.CORTEX_USER TO ROLE GROCERY_ML_ROLE;
+-- REVOKE DATABASE ROLE SNOWFLAKE.CORTEX_USER FROM ROLE PUBLIC;
+
+------------------------------------------------------------------------------
+-- 5. [RUN SEPARATELY] Move dbt off ACCOUNTADMIN
+------------------------------------------------------------------------------
+-- dbt-built objects are owned by ACCOUNTADMIN today. Transfer ownership of the
+-- dbt schemas (and everything in them) to GROCERY_TRANSFORMER, then change
+-- `role:` in ~/.dbt/profiles.yml (targets dev and sandbox). Dynamic tables keep
+-- refreshing under their new owner, which needs warehouse usage.
+--
+-- GRANT OWNERSHIP ON SCHEMA GROCERYDBTPROJECT.GROCERY_ML TO ROLE GROCERY_ML_ROLE COPY CURRENT GRANTS;
+-- GRANT USAGE ON WAREHOUSE COMPUTE_WH TO ROLE GROCERY_TRANSFORMER;
+-- GRANT USAGE, CREATE SCHEMA ON DATABASE GROCERYDBTPROJECT TO ROLE GROCERY_TRANSFORMER;
+-- GRANT USAGE ON SCHEMA GROCERYDBTPROJECT.GROCERY_RAW_KROGER TO ROLE GROCERY_TRANSFORMER;
+-- GRANT USAGE ON SCHEMA GROCERYDBTPROJECT.GROCERY_RAW_WALMART TO ROLE GROCERY_TRANSFORMER;
+-- GRANT SELECT ON ALL TABLES IN SCHEMA GROCERYDBTPROJECT.GROCERY_RAW_KROGER TO ROLE GROCERY_TRANSFORMER;
+-- GRANT SELECT ON ALL TABLES IN SCHEMA GROCERYDBTPROJECT.GROCERY_RAW_WALMART TO ROLE GROCERY_TRANSFORMER;
+-- (repeat for the UPC raw schema)
+-- For each dbt schema (GROCERY_RAW, GROCERY_STAGING, GROCERY_STAGING_WALMART,
+-- GROCERY_STAGING_UPC, GROCERY_INTERMEDIATE, GROCERY_INTERMEDIATE_WALMART,
+-- GROCERY_INTERMEDIATE_COMMON, GROCERY_MARTS, and the GROCERY_DEV_* sandbox schemas):
+-- GRANT OWNERSHIP ON SCHEMA <schema> TO ROLE GROCERY_TRANSFORMER COPY CURRENT GRANTS;
+-- GRANT OWNERSHIP ON ALL TABLES IN SCHEMA <schema> TO ROLE GROCERY_TRANSFORMER COPY CURRENT GRANTS;
+-- GRANT OWNERSHIP ON ALL VIEWS IN SCHEMA <schema> TO ROLE GROCERY_TRANSFORMER COPY CURRENT GRANTS;
+-- GRANT OWNERSHIP ON ALL DYNAMIC TABLES IN SCHEMA <schema> TO ROLE GROCERY_TRANSFORMER COPY CURRENT GRANTS;

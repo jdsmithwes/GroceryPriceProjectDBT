@@ -1,0 +1,23 @@
+RETAILER,BRAND,TIER
+kroger,Kroger,core
+kroger,Kroger Mercado,core
+kroger,Kroger Carbmaster,core
+kroger,Smart Way,value
+kroger,Heritage Farm,value
+kroger,Big K,value
+kroger,Private Selection,premium
+kroger,Murray's,premium
+kroger,Simple Truth,natural
+kroger,Simple Truth Organic,organic
+kroger,Bakery Fresh,bakery
+kroger,Bakery Fresh Goodness,bakery
+kroger,Home Chef,meal_kit
+kroger,Comforts,baby
+kroger,Pet Pride,pet
+kroger,Everyday Living,household
+walmart,Great Value,core
+walmart,Walmart,core
+walmart,Marketside,fresh
+walmart,Freshness Guaranteed,bakery
+walmart,Sam's Choice,premium
+walmart,Equate,health

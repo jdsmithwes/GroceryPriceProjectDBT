@@ -7,14 +7,17 @@ packages:
   version: 0.14.1
 - package: godatadriven/dbt_date
   name: dbt_date
-  version: 0.20.0
+  version: 0.21.0
 - package: metaplane/dbt_expectations
   name: dbt_expectations
   version: 0.10.10
 - package: tnightengale/dbt_meta_testing
   name: dbt_meta_testing
   version: 0.4.0
+- package: Snowflake-Labs/dbt_semantic_view
+  name: dbt_semantic_view
+  version: 1.0.3
 - package: dbt-labs/dbt_utils
   name: dbt_utils
   version: 1.4.1
-sha1_hash: e26e45467a38c8eb9337c2e8ecf96fcaedcb9f86
+sha1_hash: dc4496927fdc74525cbee097fac7d864b7e7297d

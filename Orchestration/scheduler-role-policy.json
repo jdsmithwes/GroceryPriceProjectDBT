@@ -1,0 +1,28 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "RunIngestTaskOnOurCluster",
+      "Effect": "Allow",
+      "Action": "ecs:RunTask",
+      "Resource": "arn:aws:ecs:us-east-1:573509103721:task-definition/grocery-ingest:*",
+      "Condition": {
+        "ArnLike": {
+          "ecs:cluster": "arn:aws:ecs:us-east-1:573509103721:cluster/grocery-ingest-cluster"
+        }
+      }
+    },
+    {
+      "Sid": "PassTaskExecutionRole",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::573509103721:role/GroceryIngestTaskExecutionRole"
+    },
+    {
+      "Sid": "ReportFailedInvocationsToDlq",
+      "Effect": "Allow",
+      "Action": "sqs:SendMessage",
+      "Resource": "arn:aws:sqs:us-east-1:573509103721:grocery-ingest-dlq"
+    }
+  ]
+}

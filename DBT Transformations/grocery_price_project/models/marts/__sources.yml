@@ -1,0 +1,46 @@
+version: 2
+
+sources:
+  # Written outside dbt by GROCERY_ML.SP_REFRESH_PRICE_FORECAST (Snowflake
+  # Scripts/Agent/02_forecast.sql), weekly via a Snowflake task. The sandbox
+  # target reads the sandbox copy so prod is never touched during testing.
+  - name: ml
+    database: GROCERYDBTPROJECT
+    schema: "{{ 'GROCERY_DEV_ML' if target.name == 'sandbox' else 'GROCERY_ML' }}"
+    description: Snowflake ML price forecasts (SNOWFLAKE.ML.FORECAST), one row per product per forecast week.
+    tables:
+      - name: price_forecast
+        description: >
+          Latest forecast run: next 6 weeks of effective price per eligible
+          product series (>= 8 observed weeks and at least one price change),
+          with an 80% prediction interval. Replaced in place each run (INSERT
+          OVERWRITE) so dependent dynamic tables keep working.
+        columns:
+          - name: SERIES
+            description: "PRODUCT_KEY (RETAILER:PRODUCT_ID)."
+          - name: TS
+            description: "Forecast week (Monday, as TIMESTAMP_NTZ)."
+          - name: FORECAST
+            description: "Forecast effective price."
+          - name: LOWER_BOUND
+            description: "Lower end of the 80% prediction interval."
+          - name: UPPER_BOUND
+            description: "Upper end of the 80% prediction interval."
+          - name: TRAINED_AT
+            description: "When the model behind this forecast was trained."
+      - name: product_type
+        description: >
+          Product-type label per food product ("peanut butter", "whole turkey",
+          "cat food"), produced by GROCERY_ML.SP_LABEL_PRODUCT_TYPES with
+          CORTEX.COMPLETE (llama3.1-70b; Snowflake Scripts/Agent/03_product_types.sql).
+          Incremental: new products are labeled by the weekly task. The sandbox
+          copy is a clone of the prod table.
+        columns:
+          - name: PRODUCT_KEY
+            description: "RETAILER:PRODUCT_ID, matches dim_product."
+          - name: PRODUCT_TYPE
+            description: "Normalized lowercase noun phrase, 1-4 words."
+          - name: MODEL
+            description: "Cortex model that produced the label."
+          - name: LABELED_AT
+            description: "When the label was produced."

@@ -31,6 +31,12 @@ WORKDIR /app
 COPY ["API Scripts/Kroger Scripts/Product Pricing/Kroger_Pricing_2026-08-10.py", \
       "API Scripts/Kroger Scripts/Product Pricing/"]
 
+# Seasonal watchlist (friday_full, before pricing) — imports auth/search/
+# flatten helpers from the catalog script, so both are copied, side by side.
+COPY ["API Scripts/Kroger Scripts/Product Catalogs/entire_productcatalog_kroger.py", \
+      "API Scripts/Kroger Scripts/Product Catalogs/kroger_seasonal_watchlist.py", \
+      "API Scripts/Kroger Scripts/Product Catalogs/"]
+
 # Walmart catalog script — same relative depth as the real repo.
 COPY ["API Scripts/Walmart Scripts/entire_productcatalog_walmart.py", \
       "API Scripts/Walmart Scripts/"]

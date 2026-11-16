@@ -56,7 +56,7 @@ import threading
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import boto3
@@ -84,6 +84,7 @@ MAX_REQUESTS_PER_SECOND = 8
 S3_BUCKET = "grocerydbtprojectrawdata"
 S3_PREFIX = "kroger/"
 S3_CHECKPOINT_KEY = f"{S3_PREFIX}_checkpoints/kroger_pricing_completed_locations.json"
+SEASONAL_MAX_AGE_DAYS = 60  # seasonal watchlist files older than this are no longer priced
 
 
 def build_session(pool_size: int = MAX_WORKERS) -> requests.Session:
@@ -195,7 +196,24 @@ def load_known_product_ids(bucket: str, prefix: str) -> list[str]:
     for key in match_keys:
         match_df = pd.read_csv(io.BytesIO(s3.get_object(Bucket=bucket, Key=key)["Body"].read()), dtype=str)
         product_ids.update(match_df["productId"].dropna())
-    logger.info("%s product IDs (%s UPC-match files included)", len(product_ids), len(match_keys))
+
+    # Seasonal products (Product Catalogs/kroger_seasonal_watchlist.py): only
+    # files written in the last SEASONAL_MAX_AGE_DAYS, so holiday items stop
+    # being priced on their own once the season is over.
+    cutoff = datetime.now(timezone.utc) - timedelta(days=SEASONAL_MAX_AGE_DAYS)
+    seasonal_response = s3.list_objects_v2(Bucket=bucket, Prefix=f"{prefix}seasonal/kroger_product_catalog_seasonal_")
+    seasonal_keys = [
+        obj["Key"] for obj in seasonal_response.get("Contents", [])
+        if obj["Key"].endswith(".csv") and obj["LastModified"] >= cutoff
+    ]
+    for key in seasonal_keys:
+        seasonal_df = pd.read_csv(io.BytesIO(s3.get_object(Bucket=bucket, Key=key)["Body"].read()), dtype=str)
+        product_ids.update(seasonal_df["productId"].dropna())
+
+    logger.info(
+        "%s product IDs (%s UPC-match files, %s seasonal files from the last %s days included)",
+        len(product_ids), len(match_keys), len(seasonal_keys), SEASONAL_MAX_AGE_DAYS,
+    )
 
     return sorted(product_ids)
 

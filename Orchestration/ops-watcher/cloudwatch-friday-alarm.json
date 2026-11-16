@@ -1,0 +1,17 @@
+{
+  "AlarmName": "grocery-ingest-friday-never-started",
+  "AlarmDescription": "No EventBridge Scheduler invocation attempt in schedule group default for 7 consecutive days: the weekly grocery-ingest schedules (Fri 17:00 ET, Sat continue) stopped firing. Scheduler metrics have no per-schedule dimension (checked 2026-11-15), and a weekly schedule has zero attempts on 6 of 7 days, hence 7 daily periods. Snowflake sensors catch a missing run on Saturday; this is the independent AWS-side check.",
+  "Namespace": "AWS/Scheduler",
+  "MetricName": "InvocationAttemptCount",
+  "Dimensions": [{"Name": "ScheduleGroup", "Value": "default"}],
+  "Statistic": "Sum",
+  "Period": 86400,
+  "EvaluationPeriods": 7,
+  "DatapointsToAlarm": 7,
+  "Threshold": 1,
+  "ComparisonOperator": "LessThanThreshold",
+  "TreatMissingData": "breaching",
+  "AlarmActions": ["arn:aws:sns:us-east-1:573509103721:grocery-ops-alerts"],
+  "OKActions": [],
+  "Tags": [{"Key": "project", "Value": "grocery-price"}, {"Key": "layer", "Value": "ops"}]
+}

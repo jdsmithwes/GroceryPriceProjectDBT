@@ -1,18 +1,27 @@
--- Deploy the Kroger Product Catalog Viewer Streamlit app to Snowflake.
--- Run this after uploading product_catalog_viewer.py to a stage.
+-- Deploy the Streamlit apps to Snowflake. Run as ACCOUNTADMIN.
+--
+-- Grocery Value app (2026-11-15): chat with GROCERY_VALUE_AGENT, item lookup
+-- by store, basket pricing and saved lists, deals and trends. Lives with the
+-- agent in GROCERY_SEMANTIC and runs on GROCERY_AGENT_WH. From the repo root:
+--
+--   snow stage copy Streamlit/grocery_value_app.py @GROCERYDBTPROJECT.GROCERY_SEMANTIC.STREAMLIT_APPS/grocery_value_app --overwrite
+--   snow sql -f Streamlit/deploy_streamlit.sql
 
--- 1. Create a stage for the Streamlit app code (if not exists)
-CREATE STAGE IF NOT EXISTS GROCERYDBTPROJECT.GROCERY_STAGING.STREAMLIT_APPS
+CREATE STAGE IF NOT EXISTS GROCERYDBTPROJECT.GROCERY_SEMANTIC.STREAMLIT_APPS
     DIRECTORY = (ENABLE = TRUE);
 
--- 2. Upload the app file (run from SnowSQL or Snowsight):
---    PUT file:///path/to/product_catalog_viewer.py @GROCERYDBTPROJECT.GROCERY_STAGING.STREAMLIT_APPS/product_catalog_viewer AUTO_COMPRESS=FALSE OVERWRITE=TRUE;
+CREATE OR REPLACE STREAMLIT GROCERYDBTPROJECT.GROCERY_SEMANTIC.GROCERY_VALUE_APP
+    ROOT_LOCATION = '@GROCERYDBTPROJECT.GROCERY_SEMANTIC.STREAMLIT_APPS/grocery_value_app'
+    MAIN_FILE = 'grocery_value_app.py'
+    QUERY_WAREHOUSE = 'GROCERY_AGENT_WH'
+    COMMENT = 'Grocery Value: agent chat, item lookup by store, basket pricing, deals and trends over the grocery marts';
 
--- 3. Create the Streamlit app
-CREATE OR REPLACE STREAMLIT GROCERYDBTPROJECT.GROCERY_STAGING.KROGER_PRODUCT_CATALOG_VIEWER
-    ROOT_LOCATION = '@GROCERYDBTPROJECT.GROCERY_STAGING.STREAMLIT_APPS/product_catalog_viewer'
-    MAIN_FILE = 'product_catalog_viewer.py'
-    QUERY_WAREHOUSE = 'SNOWFLAKE_LEARNING_WH';
+GRANT USAGE ON STREAMLIT GROCERYDBTPROJECT.GROCERY_SEMANTIC.GROCERY_VALUE_APP TO ROLE GROCERY_AGENT_USER;
 
--- 4. Grant access (adjust role as needed)
--- GRANT USAGE ON STREAMLIT GROCERYDBTPROJECT.GROCERY_STAGING.KROGER_PRODUCT_CATALOG_VIEWER TO ROLE <your_role>;
+-- Older Kroger catalog viewer (Streamlit/product_catalog_viewer.py), kept for
+-- browsing the raw catalog with images; redeploy the same way into
+-- GROCERY_STAGING.STREAMLIT_APPS/product_catalog_viewer if still wanted:
+-- CREATE OR REPLACE STREAMLIT GROCERYDBTPROJECT.GROCERY_STAGING.KROGER_PRODUCT_CATALOG_VIEWER
+--     ROOT_LOCATION = '@GROCERYDBTPROJECT.GROCERY_STAGING.STREAMLIT_APPS/product_catalog_viewer'
+--     MAIN_FILE = 'product_catalog_viewer.py'
+--     QUERY_WAREHOUSE = 'SNOWFLAKE_LEARNING_WH';
