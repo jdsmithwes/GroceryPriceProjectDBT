@@ -168,10 +168,10 @@ and runs are history, not state the product depends on.
 
 ## Not done yet (as of 2026-11-15)
 
-- Build the Snowsight dashboard once from `dashboard_tiles.sql`; add
-  `GROCERY_OPS_AGENT` to Snowflake Intelligence (Snowsight › AI & ML › Agents,
-  or re-create it in `SNOWFLAKE_INTELLIGENCE.AGENTS` if the picker does not
-  list agents from other schemas).
+- Build the Snowsight dashboard once from `dashboard_tiles.sql`.
+  (`GROCERY_OPS_AGENT` was added to Snowflake Intelligence on 2026-11-15 with
+  `ALTER SNOWFLAKE INTELLIGENCE SNOWFLAKE_INTELLIGENCE_OBJECT_DEFAULT ADD AGENT …`;
+  the same line is in `06_control_plane.sql`.)
 - A second CloudWatch alarm on `AWS/Scheduler TargetErrorCount ≥ 1` (would have
   caught the Oct 15 – Nov 13 failures on day one; needs one more alarm name in
   `Orchestration/ops-watcher/iam-deployer-policy.json`).
