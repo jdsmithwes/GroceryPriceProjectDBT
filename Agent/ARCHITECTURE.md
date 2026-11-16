@@ -149,6 +149,18 @@ a 2-credit monitor. Its rule: **sensors decide, agents explain, humans act.**
   unreachable; a CloudWatch alarm on EventBridge Scheduler attempts covers the
   "job never started" case from the AWS side.
 
+- **Public guests (2026-11-16)**: a second Streamlit front end on Streamlit
+  Community Cloud (`Streamlit/guest_app/`) lets people without a Snowflake
+  account use the shopper agent. It connects as a key-pair service user with
+  a read-only role plus four `SP_GUEST_*` procedures; guests sign up (name,
+  email, LinkedIn, consent) into hybrid tables, get one 60-minute /
+  0.25-credit session per week, and share a 5-credit weekly budget. Three
+  stops: the app's meter (estimate), the ops alert (billed credits from
+  `CORTEX_AGENT_USAGE_HISTORY` + `QUERY_ATTRIBUTION_HISTORY`), and a weekly
+  resource monitor on the guest warehouse. Snowflake-native embedding was
+  considered and rejected for cost: it needs the container runtime, about
+  0.06 credits per hour while the app server is up.
+
 This is the Snowflake answer to "who runs the agents": the same platform
 that holds the data runs the sensors, the models and the audit trail, with
 one RBAC and one bill.

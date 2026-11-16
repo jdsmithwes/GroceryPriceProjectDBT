@@ -32,3 +32,7 @@ Agent/evals/results_*.json
 
 # Internal operating notes (kept locally, not published)
 .claude/instructions.md
+
+# Streamlit secrets (guest app keys live in ~/.snowflake and Streamlit Cloud)
+.streamlit/secrets.toml
+**/.streamlit/secrets.toml

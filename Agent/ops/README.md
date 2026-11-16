@@ -37,6 +37,7 @@ whitelist of actions (`03_autonomy.sql`, not yet written) can run, gated by
 | Control plane, ask / change | Cortex Agent `GROCERY_OPS.GROCERY_OPS_AGENT` (Snowflake Intelligence); six mirror objects `GROCERY_OPS.AGENT_<DOMAIN>` on the Snowsight **AI & ML › Agents** page, kept in sync by `SP_SYNC_AGENT_OBJECTS()` | on demand | Sonnet 5.5 |
 | Independent watcher | AWS Lambda `grocery-ops-watcher` → SNS `grocery-ops-alerts` → Proton (deployed 2026-11-15; `Orchestration/ops-watcher/`) | daily 09:00 | — |
 | Scheduler alarm | CloudWatch `grocery-ingest-friday-never-started`: no EventBridge Scheduler attempt for 7 days → same SNS topic | continuous | — |
+| Public guest app | Streamlit Community Cloud `Streamlit/guest_app/` as `SVC_GUEST_APP` / `GROCERY_GUEST_ROLE` on `GROCERY_GUEST_WH`; limits in `GROCERY_APP.GUEST_SETTING`; sensor `V_CHECK_GUEST_SPEND`, hourly `ALERT_GUEST_BUDGET`, weekly 5-credit `GROCERY_GUEST_MONITOR` (`Snowflake Scripts/Guest/01_guest_access.sql`, `Streamlit/guest_app/README.md`) | on demand | Sonnet 5.5 (shopper agent) |
 
 All of it runs as `GROCERY_OPS_ROLE` on `GROCERY_OPS_WH` (X-Small, 60 s
 auto-suspend) under `GROCERY_OPS_MONITOR` (2 credits/month). Scripts, in run
