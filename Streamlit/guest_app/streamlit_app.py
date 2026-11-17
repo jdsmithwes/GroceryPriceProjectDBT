@@ -194,52 +194,188 @@ def limit_banner(g: dict) -> None:
         st.warning("**You've already used your guest session this week.** Sessions reset Monday 00:00 ET.")
 
 
+# --------------------------------------------------------------------------
+# email (one-time codes) — Gmail SMTP with an app password from st.secrets["email"]
+# --------------------------------------------------------------------------
+def email_configured() -> bool:
+    try:
+        e = st.secrets["email"]
+        return bool(e.get("smtp_user") and e.get("smtp_app_password"))
+    except Exception:
+        return False
+
+
+def send_code_email(to: str, first_name: str | None, code: str, purpose: str, ttl_minutes: int = 15) -> tuple[bool, str]:
+    """Send the 6-digit code. Returns (ok, error). The code is never shown on screen or logged."""
+    import smtplib
+    import ssl
+    from email.message import EmailMessage
+
+    e = st.secrets["email"]
+    app_url = e.get("app_url", "")
+    msg = EmailMessage()
+    msg["Subject"] = f"Your Grocery Value code: {code}"
+    msg["From"] = f"{e.get('from_name', 'Grocery Value')} <{e['smtp_user']}>"
+    msg["To"] = to
+    if purpose in ("verify", "reminder"):
+        intro = "Welcome! Enter this code in the app to finish setting up your guest access."
+    else:
+        intro = "Here is your login code for the Grocery Value guest app."
+    msg.set_content(
+        f"Hi {first_name or 'there'},\n\n{intro}\n\n    {code}\n\nIt expires in {ttl_minutes} minutes."
+        + (f"\n\nOpen the app: {app_url}" if app_url else "")
+        + "\n\nIf you did not request this, you can ignore this email.\n\nGrocery Value (guest edition)"
+    )
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ssl.create_default_context(), timeout=20) as s:
+            s.login(e["smtp_user"], e["smtp_app_password"])
+            s.send_message(msg)
+        return True, ""
+    except Exception as ex:
+        return False, str(ex)[:200]
+
+
+def issue_and_send(email: str, purpose: str) -> tuple[bool, str]:
+    """Ask Snowflake for a code and email it. Unknown emails get the same 'sent' answer (no enumeration)."""
+    try:
+        r = call_proc(f"{APP}.SP_GUEST_ISSUE_CODE", email, purpose)
+    except Exception as ex:
+        return False, f"Could not create a code: {str(ex)[:200]}"
+    if not r.get("sent"):
+        reason = r.get("reason")
+        if reason == "rate_limited":
+            return False, "You have requested a few codes already. Please use the last one, or try again in an hour."
+        if reason == "daily_limit":
+            return False, "The app has sent its daily share of codes. Please try again tomorrow."
+        if reason == "reminder_limit":
+            return False, "Reminder limit reached."
+        return False, "Could not send a code right now."
+    code = r.get("code")
+    if code:
+        if not email_configured():
+            return False, "Email sending is not configured on this deployment yet; the owner has been told."
+        ok, err = send_code_email(email, r.get("first_name"), code, purpose, int(r.get("ttl_minutes") or 15))
+        if not ok:
+            return False, f"Could not send the email ({err}). Please try again in a minute."
+    return True, ""
+
+
+def finish_login(email: str, code: str) -> None:
+    """Verify the code; on success install the guest session (even when the week's session is used up, so the banner can explain)."""
+    try:
+        v = call_proc(f"{APP}.SP_GUEST_VERIFY_CODE", email, code)
+    except Exception as ex:
+        st.error(f"Could not verify the code: {str(ex)[:200]}")
+        return
+    if not v.get("ok"):
+        reason = v.get("reason")
+        msgs = {
+            "wrong_code": f"That code is not right. {v.get('attempts_left', 0)} tries left.",
+            "locked": "Too many wrong tries. Request a new code.",
+            "expired": "That code has expired. Request a new one.",
+            "no_code": "No active code for this email. Request a new one.",
+        }
+        st.error(msgs.get(reason, "Could not verify that code."))
+        return
+    g = {"guest_id": v.get("guest_id"), "guest_username": v.get("guest_username"), "first_name": v.get("first_name"),
+         "session_id": v.get("session_id"), "started_at": v.get("started_at"), "expires_at": v.get("expires_at")}
+    refresh_status(g, v)
+    st.session_state["guest"] = g
+    st.session_state["pending_wh_seconds"] = 0.0
+    for k in ("code_stage", "pending_email", "code_purpose", "code_note"):
+        st.session_state.pop(k, None)
+    st.rerun()
+
+
 def sign_up_gate() -> None:
     st.title("Grocery Value")
     st.caption("Kroger (81 Atlanta-area stores) and Walmart prices, a buy-now-or-wait signal, and an AI agent that answers in plain English.")
     c1, c2 = st.columns([3, 2])
     with c1:
-        st.markdown(
-            "**Try it as a guest.** Sign up with your name, email and LinkedIn profile and you get one session: "
-            f"**{SESSION_MINUTES} minutes or {SESSION_CREDIT_CAP:g} Snowflake credits**, whichever comes first (about two agent questions "
-            "plus unlimited lookups and basket pricing). Everyone together shares a weekly budget of "
-            f"{WEEKLY_CREDIT_CAP:g} credits; when it is spent, the door closes until Monday. The meter in the sidebar shows where you stand.")
-        with st.form("guest_signup"):
-            a, b = st.columns(2)
-            first = a.text_input("First name", max_chars=60)
-            last = b.text_input("Last name", max_chars=60)
-            email = st.text_input("Email", max_chars=120)
-            linkedin = st.text_input("LinkedIn profile URL", placeholder="https://www.linkedin.com/in/your-handle", max_chars=200)
-            consent = st.checkbox("I agree that my name, email, LinkedIn URL and my questions and clicks in this app are stored in the owner's Snowflake account "
-                                  "so the owner can see how the app is used and follow up. No data is sold or shared.")
-            go = st.form_submit_button("Start my guest session", type="primary")
-        if go:
-            errs = []
-            if not first.strip() or not last.strip():
-                errs.append("First and last name are required.")
-            if not EMAIL_RE.match(email.strip()):
-                errs.append("That email address does not look valid.")
-            if not LINKEDIN_RE.match(linkedin.strip()):
-                errs.append("The LinkedIn URL should look like https://www.linkedin.com/in/your-handle.")
-            if not consent:
-                errs.append("Please tick the consent box; without it nothing is stored and the session cannot start.")
-            if errs:
-                for e in errs:
-                    st.error(e)
-            else:
-                with st.spinner("Setting up your session..."):
-                    try:
-                        reg = call_proc(f"{APP}.SP_GUEST_REGISTER", email.strip().lower(), first.strip(), last.strip(), linkedin.strip(), True)
-                        start = call_proc(f"{APP}.SP_GUEST_START_SESSION", reg["guest_id"])
-                    except Exception as e:
-                        st.error(f"Could not start a session: {str(e)[:300]}")
-                        st.stop()
-                g = {"guest_id": reg["guest_id"], "guest_username": reg.get("guest_username"), "first_name": first.strip(),
-                     "session_id": start.get("session_id"), "started_at": start.get("started_at"), "expires_at": start.get("expires_at")}
-                refresh_status(g, start)
-                st.session_state["guest"] = g
-                st.session_state["pending_wh_seconds"] = 0.0
+        if st.session_state.get("code_stage"):
+            email = st.session_state["pending_email"]
+            st.markdown(f"**Check your email.** We sent a 6-digit code to **{email}**. It expires in 15 minutes.")
+            if st.session_state.get("code_note"):
+                st.info(st.session_state["code_note"])
+            with st.form("code_form"):
+                code = st.text_input("6-digit code", max_chars=6)
+                ok = st.form_submit_button("Continue", type="primary")
+            if ok and code.strip():
+                finish_login(email, code.strip())
+            b1, b2 = st.columns(2)
+            if b1.button("Resend code"):
+                sent, err = issue_and_send(email, st.session_state.get("code_purpose", "login"))
+                st.success("Sent again. Check spam if it is not there in a minute.") if sent else st.error(err)
+            if b2.button("Use a different email"):
+                for k in ("code_stage", "pending_email", "code_purpose", "code_note"):
+                    st.session_state.pop(k, None)
                 st.rerun()
+            st.caption("Codes come from the owner's Gmail address. If nothing arrives, check spam or try again in a minute.")
+        else:
+            st.markdown(
+                "**Try it as a guest.** Sign up once with your name, email and LinkedIn profile; we email you a code to confirm the address. "
+                f"You get one session a week: **{SESSION_MINUTES} minutes or {SESSION_CREDIT_CAP:g} Snowflake credits**, whichever comes first "
+                "(about two agent questions plus unlimited lookups and basket pricing). Everyone together shares a weekly budget of "
+                f"{WEEKLY_CREDIT_CAP:g} credits; when it is spent, the door closes until Monday. Already registered? Use **Log in**.")
+            t_signup, t_login = st.tabs(["Sign up", "Log in"])
+            with t_signup:
+                with st.form("guest_signup"):
+                    a, b = st.columns(2)
+                    first = a.text_input("First name", max_chars=60)
+                    last = b.text_input("Last name", max_chars=60)
+                    email = st.text_input("Email", max_chars=120)
+                    linkedin = st.text_input("LinkedIn profile URL", placeholder="https://www.linkedin.com/in/your-handle", max_chars=200)
+                    consent = st.checkbox("I agree that my name, email, LinkedIn URL and my questions and clicks in this app are stored in the owner's Snowflake account "
+                                          "so the owner can see how the app is used and follow up. No data is sold or shared.")
+                    go = st.form_submit_button("Sign up and email me a code", type="primary")
+                if go:
+                    errs = []
+                    if not first.strip() or not last.strip():
+                        errs.append("First and last name are required.")
+                    if not EMAIL_RE.match(email.strip()):
+                        errs.append("That email address does not look valid.")
+                    if not LINKEDIN_RE.match(linkedin.strip()):
+                        errs.append("The LinkedIn URL should look like https://www.linkedin.com/in/your-handle.")
+                    if not consent:
+                        errs.append("Please tick the consent box; without it nothing is stored and the session cannot start.")
+                    if errs:
+                        for e in errs:
+                            st.error(e)
+                    else:
+                        em = email.strip().lower()
+                        with st.spinner("Sending your code..."):
+                            try:
+                                reg = call_proc(f"{APP}.SP_GUEST_REGISTER", em, first.strip(), last.strip(), linkedin.strip(), True)
+                            except Exception as ex:
+                                st.error(f"Could not sign you up: {str(ex)[:200]}")
+                                st.stop()
+                            if reg.get("error") == "blocked":
+                                st.error("This email cannot be used for guest access.")
+                                st.stop()
+                            purpose = "login" if reg.get("already_registered") else "verify"
+                            sent, err = issue_and_send(em, purpose)
+                        if not sent:
+                            st.error(err)
+                        else:
+                            st.session_state.update({"code_stage": True, "pending_email": em, "code_purpose": purpose,
+                                                     "code_note": "That email is already registered, so we sent a login code instead." if purpose == "login" else None})
+                            st.rerun()
+            with t_login:
+                with st.form("guest_login"):
+                    lemail = st.text_input("Email you registered with", max_chars=120)
+                    lgo = st.form_submit_button("Email me a login code", type="primary")
+                if lgo:
+                    em = lemail.strip().lower()
+                    if not EMAIL_RE.match(em):
+                        st.error("That email address does not look valid.")
+                    else:
+                        with st.spinner("Sending your code..."):
+                            sent, err = issue_and_send(em, "login")
+                        if not sent:
+                            st.error(err)
+                        else:
+                            st.session_state.update({"code_stage": True, "pending_email": em, "code_purpose": "login", "code_note": None})
+                            st.rerun()
     with c2:
         st.markdown("**What it can answer**")
         for fam, desc in FAMILIES.items():
@@ -310,14 +446,66 @@ def cross_retailer(upc_a: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def deals_tables() -> tuple[pd.DataFrame, pd.DataFrame, list]:
-    genuine = q(f"""
-        SELECT p.RETAILER, p.PRODUCT_NAME, s.STORE_NAME, sp.CURRENT_PRICE, sp.CURRENT_REGULAR_PRICE, sp.CURRENT_DISCOUNT_PCT
-        FROM {MARTS}.DBT_FCT_PRODUCT_PRICE_SUMMARY sp
-        JOIN {MARTS}.DBT_DIM_PRODUCT p ON p.PRODUCT_KEY = sp.PRODUCT_KEY
-        JOIN {MARTS}.DBT_DIM_STORE s ON s.STORE_ID = sp.STORE_ID
-        WHERE sp.IS_CURRENTLY_LISTED AND sp.DEAL_QUALITY = 'GENUINE' AND p.IS_FOOD
-        ORDER BY sp.CURRENT_DISCOUNT_PCT DESC LIMIT 25""")
+def deals_by_product(retailer: str | None = None, limit: int = 25) -> pd.DataFrame:
+    """Genuine deals, one row per product (not per store); the stores ride along as a JSON array."""
+    rfilter = f"AND p.RETAILER = {lit(retailer)}" if retailer else ""
+    return q(f"""
+        WITH d AS (
+            SELECT sp.PRODUCT_KEY, s.STORE_NAME, s.CITY, s.ZIP_CODE, sp.CURRENT_PRICE, sp.CURRENT_REGULAR_PRICE, sp.CURRENT_DISCOUNT_PCT
+            FROM {MARTS}.DBT_FCT_PRODUCT_PRICE_SUMMARY sp
+            JOIN {MARTS}.DBT_DIM_STORE s ON s.STORE_ID = sp.STORE_ID
+            JOIN {MARTS}.DBT_DIM_PRODUCT p ON p.PRODUCT_KEY = sp.PRODUCT_KEY
+            WHERE sp.IS_CURRENTLY_LISTED AND sp.DEAL_QUALITY = 'GENUINE' AND p.IS_FOOD {rfilter}
+        )
+        SELECT p.RETAILER, p.PRODUCT_NAME, p.BRAND, p.SIZE_TEXT, p.IMAGE_URL, d.PRODUCT_KEY,
+               MIN(d.CURRENT_PRICE) AS BEST_PRICE, MEDIAN(d.CURRENT_REGULAR_PRICE) AS REGULAR_PRICE,
+               MAX(d.CURRENT_DISCOUNT_PCT) AS BEST_DISCOUNT_PCT, COUNT(*) AS STORES_ON_DEAL,
+               ARRAY_AGG(OBJECT_CONSTRUCT('store', d.STORE_NAME, 'city', d.CITY, 'zip', d.ZIP_CODE, 'price', d.CURRENT_PRICE, 'regular', d.CURRENT_REGULAR_PRICE))
+                   WITHIN GROUP (ORDER BY d.CURRENT_PRICE, d.STORE_NAME) AS LOCATIONS
+        FROM d JOIN {MARTS}.DBT_DIM_PRODUCT p ON p.PRODUCT_KEY = d.PRODUCT_KEY
+        GROUP BY 1, 2, 3, 4, 5, 6
+        ORDER BY BEST_DISCOUNT_PCT DESC, STORES_ON_DEAL DESC
+        LIMIT {int(limit)}""")
+
+
+def render_deals(deals: pd.DataFrame) -> None:
+    """One compact row per product with a pull-down listing the stores on deal."""
+    if deals.empty:
+        st.info("No genuine deals in the latest collection.")
+        return
+    for _, r in deals.iterrows():
+        c1, c2, c3 = st.columns([1, 6, 3])
+        if r.get("IMAGE_URL"):
+            c1.image(r["IMAGE_URL"], width=56)
+        meta = " · ".join(x for x in [r.get("BRAND"), r.get("SIZE_TEXT"), str(r.get("RETAILER") or "").title()] if x)
+        c2.markdown(f"**{r['PRODUCT_NAME']}**  \n{meta}".replace("$", "\\$"))
+        best, reg, disc = r.get("BEST_PRICE"), r.get("REGULAR_PRICE"), r.get("BEST_DISCOUNT_PCT")
+        price_md = f"**\\${best:.2f}**" if pd.notna(best) else "—"
+        if pd.notna(reg) and reg and reg > (best or 0):
+            price_md += f" ~~\\${reg:.2f}~~"
+        if pd.notna(disc):
+            price_md += f"  \nsave {disc:.0%}"
+        c3.markdown(price_md)
+        locs = r.get("LOCATIONS")
+        if isinstance(locs, str):
+            try:
+                locs = json.loads(locs)
+            except ValueError:
+                locs = []
+        n = int(r.get("STORES_ON_DEAL") or len(locs or []))
+        if str(r.get("RETAILER")).lower() == "walmart":
+            st.caption("Walmart.com (national online price)")
+        else:
+            with st.expander(f"On deal at {n} Kroger store{'s' if n != 1 else ''}: where"):
+                ldf = pd.DataFrame(locs or [])
+                if not ldf.empty:
+                    ldf = ldf.rename(columns={"store": "Store", "city": "City", "zip": "ZIP", "price": "Price", "regular": "Regular"})
+                    show_df(ldf.style.format({"Price": "${:.2f}", "Regular": "${:.2f}"}, na_rep="—"))
+        st.markdown("---")
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def deals_tables() -> tuple[pd.DataFrame, list]:
     drops = q(f"""
         SELECT p.RETAILER, p.PRODUCT_NAME, r.MEDIAN_CURRENT_PRICE, r.MEDIAN_CHANGE_4W_PCT, r.REF_WEEK_4W
         FROM {MARTS}.DBT_FCT_PRODUCT_PRICE_ROLLUP r
@@ -325,7 +513,7 @@ def deals_tables() -> tuple[pd.DataFrame, pd.DataFrame, list]:
         WHERE p.IS_FOOD AND r.MEDIAN_CHANGE_4W_PCT IS NOT NULL
         ORDER BY r.MEDIAN_CHANGE_4W_PCT LIMIT 25""")
     cats = q(f"SELECT DISTINCT COMMON_CATEGORY FROM {MARTS}.DBT_FCT_CATEGORY_PRICE_INDEX_WEEKLY WHERE IS_FOOD_CATEGORY ORDER BY 1")["COMMON_CATEGORY"].tolist()
-    return genuine, drops, cats
+    return drops, cats
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -550,11 +738,13 @@ with tab_basket:
 # ---------------------------------------------------------------- Deals
 with tab_deals:
     st.subheader("Deals & trends")
-    genuine, drops, cats = deals_tables()
-    d1, d2 = st.columns(2)
+    drops, cats = deals_tables()
+    d1, d2 = st.columns([3, 2])
     with d1:
-        st.markdown("**Genuine deals this week** (promo well below the usual regular price, not routine)")
-        show_df(genuine)
+        h, f = st.columns([3, 1])
+        h.markdown("**Genuine deals this week** (promo well below the usual regular price, not routine). One row per product; open a row to see which stores.")
+        deal_retailer = f.selectbox("Retailer", ["both", "kroger", "walmart"], key="deal_retailer", label_visibility="collapsed")
+        render_deals(deals_by_product(None if deal_retailer == "both" else deal_retailer))
     with d2:
         st.markdown("**Biggest 4-week price drops (food, typical store)**")
         show_df(drops)

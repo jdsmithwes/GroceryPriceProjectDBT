@@ -7,28 +7,38 @@ service user `SVC_GUEST_APP` (role `GROCERY_GUEST_ROLE`, warehouse
 
 | | |
 |---|---|
-| App code | `Streamlit/guest_app/streamlit_app.py` (+ `requirements.txt`) |
-| Snowflake side | `Snowflake Scripts/Guest/01_guest_access.sql` |
-| Guest data | `GROCERY_APP.GUEST_USER`, `GUEST_SESSION`, `GUEST_INTERACTION`, `GUEST_SETTING` (hybrid tables) |
+| App code | `Streamlit/guest_app/streamlit_app.py` (+ `requirements.txt`, `send_reminders.py`) |
+| Snowflake side | `Snowflake Scripts/Guest/01_guest_access.sql` (access, metering), `02_guest_login.sql` (email-verified passwordless login) |
+| Guest data | `GROCERY_APP.GUEST_USER`, `GUEST_SESSION`, `GUEST_INTERACTION`, `GUEST_SETTING`, `GUEST_LOGIN_CODE` (hybrid tables) |
 | Limits | one session per guest per ET week: **60 minutes or 0.25 credits**; **5 credits per week** for all guests together |
 | Stops | app meter (estimate) → ops alert `ALERT_GUEST_BUDGET` (billed credits, ≤ 3 h lag) → resource monitor `GROCERY_GUEST_MONITOR` (weekly 5, suspends the warehouse) |
 | Visitor message | sidebar meter; banner on session cap, time expiry, weekly cap, or manual close, with the Monday 00:00 ET return time |
 
 ## What a visitor sees
 
-1. Sign-up form: first name, last name, email, LinkedIn profile URL, consent
+1. **Sign up** tab: first name, last name, email, LinkedIn profile URL, consent
    checkbox (what is stored and why). All four fields are required and
-   validated; without consent nothing is stored.
-2. `SP_GUEST_REGISTER` upserts the guest by email and returns a guest
-   username (`guest_xxxxxx`); `SP_GUEST_START_SESSION` opens the week's one
-   session (or refuses with a reason). The username and the meter sit in the
-   sidebar.
-3. The four tabs. Every question, lookup, basket pricing and deals view calls
+   validated; without consent nothing is stored. `SP_GUEST_REGISTER` creates
+   the guest as `pending` (username `guest_xxxxxx`). An already-verified email
+   is refused here (no profile overwrite) and gets a login code instead.
+2. **Code**: `SP_GUEST_ISSUE_CODE` creates a 6-digit one-time code (hashed at
+   rest, 15 minutes, 5 tries, 3 per email per hour, 200 per day) and the app
+   emails it from the owner's Gmail. `SP_GUEST_VERIFY_CODE` checks it, marks
+   the email verified, sets the guest `active`, and starts (or resumes) the
+   week's session. Unknown emails get the same "sent" message, so sign-ups
+   cannot be enumerated.
+3. **Log in** tab for return visits: email → new code → session. There are no
+   passwords and no long-lived tokens; a code is needed each visit. The
+   username and the meter sit in the sidebar.
+4. The four tabs. Every question, lookup, basket pricing and deals view calls
    `SP_GUEST_RECORD`, which logs the interaction (input, output head, tokens,
    model, warehouse seconds, estimated credits) and returns the new status.
    The app disables inputs and shows the banner the moment a limit is hit.
-4. Guests cannot save lists or set price watches (that state would belong to
+5. Guests cannot save lists or set price watches (that state would belong to
    the shared service user); they can price baskets and compare.
+6. Deals & trends lists genuine deals **one row per product** (25 products,
+   not 25 store rows) with a pull-down of the stores on deal; the same query
+   runs in the Snowflake app.
 
 ## How credits are estimated
 
@@ -73,7 +83,17 @@ the hourly alert closes guest access when billed spend reaches 5.
    ...
    -----END PRIVATE KEY-----
    """
+
+   [email]
+   smtp_user         = "<gmail address>"
+   smtp_app_password = "<16-character Gmail app password>"
+   from_name         = "Grocery Value"
+   app_url           = "https://grocerypriceprojectdbt-akbd8wqcnrfuhi4hhevyzr.streamlit.app"
    ```
+   Gmail app password: Google account → Security → 2-Step Verification on →
+   App passwords → create one named "Grocery Value". Gmail allows ~500 sends a
+   day; the app caps codes at 200 a day. Without the `[email]` section the app
+   tells visitors that email is not configured and no session can start.
 4. Deploy. First load installs `requirements.txt` (about two minutes). Sign up
    once yourself to confirm the meter moves and `GUEST_INTERACTION` fills.
 5. Share the `*.streamlit.app` link. Nothing else to open: the Snowflake side
@@ -84,6 +104,11 @@ wakes it (about 30 seconds). Streamlit's free tier is the only non-Snowflake
 component and costs nothing.
 
 ## Operate
+
+- Remind people who signed up before verification existed (or never finished):
+  `python3 Streamlit/guest_app/send_reminders.py --dry-run` then without the
+  flag. Reads `[email]` from `~/.snowflake/guest_app_secrets.toml`, uses the
+  owner's `snow` connection, at most `reminder_max` (2) emails per guest.
 
 - Close early: `CALL GROCERY_APP.SP_GUEST_SET_ACCESS(FALSE, 'why');` reopen:
   `SP_GUEST_SET_ACCESS(TRUE, 'why')`. The hourly alert does the first
