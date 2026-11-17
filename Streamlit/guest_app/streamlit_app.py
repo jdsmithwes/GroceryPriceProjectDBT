@@ -227,7 +227,12 @@ def send_code_email(to: str, first_name: str | None, code: str, purpose: str, tt
         + "\n\nIf you did not request this, you can ignore this email.\n\nGrocery Value (guest edition)"
     )
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ssl.create_default_context(), timeout=20) as s:
+        try:
+            import certifi
+            ctx = ssl.create_default_context(cafile=certifi.where())
+        except ImportError:
+            ctx = ssl.create_default_context()
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ctx, timeout=20) as s:
             s.login(e["smtp_user"], e["smtp_app_password"])
             s.send_message(msg)
         return True, ""

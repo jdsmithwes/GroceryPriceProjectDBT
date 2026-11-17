@@ -52,7 +52,11 @@ def main() -> int:
         return 0
 
     app_url = email_cfg.get("app_url", "")
-    ctx = ssl.create_default_context()
+    try:  # python.org builds on macOS ship without root CAs; certifi (installed with requests) has them
+        import certifi
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        ctx = ssl.create_default_context()
     sent = 0
     with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ctx, timeout=30) as smtp:
         smtp.login(email_cfg["smtp_user"], email_cfg["smtp_app_password"])
