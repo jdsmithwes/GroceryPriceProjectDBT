@@ -219,6 +219,9 @@ FROM SPECIFICATION $$
     { "tool_spec": { "type": "generic", "name": "get_recent_runs",
         "description": "Ingestion job runs (Kroger/Walmart Friday and Saturday jobs) over the last WEEKS weeks.",
         "input_schema": { "type": "object", "properties": { "WEEKS": { "type": "number" } } } } },
+    { "tool_spec": { "type": "generic", "name": "get_cost_hotspots",
+        "description": "Where credits and minutes go over the last DAYS days: warehouses with idle share, services, top queries by attributed credits, dynamic-table refresh cost and no-op share, agent token spend, search serving, pipes, task durations, Fargate minutes, guest sessions.",
+        "input_schema": { "type": "object", "properties": { "DAYS": { "type": "number" } } } } },
     { "tool_spec": { "type": "generic", "name": "set_model_policy",
         "description": "HUMAN-REQUESTED WRITE. Change which model a task uses (optionally its token cap or enabled flag). Audited. Takes effect on the next run.",
         "input_schema": { "type": "object", "properties": {
@@ -243,6 +246,7 @@ FROM SPECIFICATION $$
     "get_runbook":         { "type": "procedure", "identifier": "GROCERYDBTPROJECT.GROCERY_OPS.TOOL_GET_RUNBOOK",        "execution_environment": { "type": "warehouse", "warehouse": "GROCERY_OPS_WH", "query_timeout": 30 } },
     "get_metric_history":  { "type": "procedure", "identifier": "GROCERYDBTPROJECT.GROCERY_OPS.TOOL_GET_METRIC_HISTORY", "execution_environment": { "type": "warehouse", "warehouse": "GROCERY_OPS_WH", "query_timeout": 30 } },
     "get_recent_runs":     { "type": "procedure", "identifier": "GROCERYDBTPROJECT.GROCERY_OPS.TOOL_GET_RECENT_RUNS",    "execution_environment": { "type": "warehouse", "warehouse": "GROCERY_OPS_WH", "query_timeout": 30 } },
+    "get_cost_hotspots":   { "type": "procedure", "identifier": "GROCERYDBTPROJECT.GROCERY_OPS.TOOL_GET_COST_HOTSPOTS",  "execution_environment": { "type": "warehouse", "warehouse": "GROCERY_OPS_WH", "query_timeout": 90 } },
     "set_model_policy":    { "type": "procedure", "identifier": "GROCERYDBTPROJECT.GROCERY_OPS.SP_SET_MODEL_POLICY",     "execution_environment": { "type": "warehouse", "warehouse": "GROCERY_OPS_WH", "query_timeout": 30 } },
     "set_check":           { "type": "procedure", "identifier": "GROCERYDBTPROJECT.GROCERY_OPS.SP_SET_CHECK",            "execution_environment": { "type": "warehouse", "warehouse": "GROCERY_OPS_WH", "query_timeout": 30 } },
     "acknowledge_finding": { "type": "procedure", "identifier": "GROCERYDBTPROJECT.GROCERY_OPS.SP_ACK_EVENT",            "execution_environment": { "type": "warehouse", "warehouse": "GROCERY_OPS_WH", "query_timeout": 30 } }
@@ -278,7 +282,7 @@ BEGIN
             'orchestration', OBJECT_CONSTRUCT('budget', OBJECT_CONSTRUCT('seconds', rec.BUDGET_SECONDS, 'tokens', rec.MAX_TOKENS)),
             'instructions', OBJECT_CONSTRUCT(
                 'response', rec.INSTRUCTIONS,
-                'orchestration', 'Interactive mirror of the scheduled ' || rec.DOMAIN || ' agent. In chat you receive no sensor JSON automatically: call get_metric_history and get_recent_runs to fetch evidence, get_runbook for known fixes. You cannot change anything; recommend and cite.',
+                'orchestration', 'Interactive mirror of the scheduled ' || rec.DOMAIN || ' agent. In chat you receive no sensor JSON automatically: call get_cost_hotspots, get_metric_history and get_recent_runs to fetch evidence, get_runbook for known fixes. You cannot change anything; recommend and cite.',
                 'sample_questions', ARRAY_CONSTRUCT(
                     OBJECT_CONSTRUCT('question', 'What would you report today for the ' || rec.DOMAIN || ' domain?'),
                     OBJECT_CONSTRUCT('question', 'Which runbook entries apply to this domain?'))),
@@ -288,11 +292,14 @@ BEGIN
                 OBJECT_CONSTRUCT('tool_spec', OBJECT_CONSTRUCT('type', 'generic', 'name', 'get_metric_history', 'description', 'Daily values of one metric (a check name, or credits metrics) per dimension over the last DAYS days.',
                     'input_schema', OBJECT_CONSTRUCT('type', 'object', 'properties', OBJECT_CONSTRUCT('METRIC_NAME', OBJECT_CONSTRUCT('type', 'string'), 'DAYS', OBJECT_CONSTRUCT('type', 'number')), 'required', ARRAY_CONSTRUCT('METRIC_NAME')))),
                 OBJECT_CONSTRUCT('tool_spec', OBJECT_CONSTRUCT('type', 'generic', 'name', 'get_recent_runs', 'description', 'Ingestion job runs over the last WEEKS weeks.',
-                    'input_schema', OBJECT_CONSTRUCT('type', 'object', 'properties', OBJECT_CONSTRUCT('WEEKS', OBJECT_CONSTRUCT('type', 'number')))))),
+                    'input_schema', OBJECT_CONSTRUCT('type', 'object', 'properties', OBJECT_CONSTRUCT('WEEKS', OBJECT_CONSTRUCT('type', 'number'))))),
+                OBJECT_CONSTRUCT('tool_spec', OBJECT_CONSTRUCT('type', 'generic', 'name', 'get_cost_hotspots', 'description', 'Where credits and minutes go over the last DAYS days: warehouses with idle share, services, top queries by attributed credits, dynamic-table refresh cost and no-op share, agent token spend, search serving, pipes, task durations, Fargate minutes, guest sessions. Call first when looking for cheaper or faster.',
+                    'input_schema', OBJECT_CONSTRUCT('type', 'object', 'properties', OBJECT_CONSTRUCT('DAYS', OBJECT_CONSTRUCT('type', 'number')))))),
             'tool_resources', OBJECT_CONSTRUCT(
                 'get_runbook',        OBJECT_CONSTRUCT('type', 'procedure', 'identifier', 'GROCERYDBTPROJECT.GROCERY_OPS.TOOL_GET_RUNBOOK',        'execution_environment', OBJECT_CONSTRUCT('type', 'warehouse', 'warehouse', 'GROCERY_OPS_WH', 'query_timeout', 30)),
                 'get_metric_history', OBJECT_CONSTRUCT('type', 'procedure', 'identifier', 'GROCERYDBTPROJECT.GROCERY_OPS.TOOL_GET_METRIC_HISTORY', 'execution_environment', OBJECT_CONSTRUCT('type', 'warehouse', 'warehouse', 'GROCERY_OPS_WH', 'query_timeout', 30)),
-                'get_recent_runs',    OBJECT_CONSTRUCT('type', 'procedure', 'identifier', 'GROCERYDBTPROJECT.GROCERY_OPS.TOOL_GET_RECENT_RUNS',    'execution_environment', OBJECT_CONSTRUCT('type', 'warehouse', 'warehouse', 'GROCERY_OPS_WH', 'query_timeout', 30)))
+                'get_recent_runs',    OBJECT_CONSTRUCT('type', 'procedure', 'identifier', 'GROCERYDBTPROJECT.GROCERY_OPS.TOOL_GET_RECENT_RUNS',    'execution_environment', OBJECT_CONSTRUCT('type', 'warehouse', 'warehouse', 'GROCERY_OPS_WH', 'query_timeout', 30)),
+                'get_cost_hotspots',  OBJECT_CONSTRUCT('type', 'procedure', 'identifier', 'GROCERYDBTPROJECT.GROCERY_OPS.TOOL_GET_COST_HOTSPOTS',  'execution_environment', OBJECT_CONSTRUCT('type', 'warehouse', 'warehouse', 'GROCERY_OPS_WH', 'query_timeout', 90)))
         ));
         ddl := 'CREATE OR REPLACE AGENT ' || obj
             || ' COMMENT = ' || '''' || REPLACE('Mirror of AGENT_REGISTRY.' || rec.AGENT_NAME || ' (prompt ' || COALESCE(rec.PROMPT_VERSION, 'v?') || ', model ' || rec.MODEL || ', runs ' || COALESCE(rec.SCHEDULE_TEXT, 'on demand') || ' via SP_RUN_AGENT). ' || COALESCE(rec.DESCRIPTION, ''), '''', '''''') || ''''
