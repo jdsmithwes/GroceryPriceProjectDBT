@@ -192,6 +192,23 @@ def limit_banner(g: dict) -> None:
         st.warning(f"**Your {SESSION_MINUTES}-minute session has ended.** Each guest gets one session a week; come back next Monday for another.")
     elif reason == "already_used":
         st.warning("**You've already used your guest session this week.** Sessions reset Monday 00:00 ET.")
+    b1, b2, _ = st.columns([1, 1, 4])
+    if b1.button("Check again", help="Re-reads your session from Snowflake (for example after the owner reset it)"):
+        try:
+            status = call_proc(f"{APP}.SP_GUEST_STATUS", g["session_id"]) if g.get("session_id") else {"allowed": False, "reason": "no_session"}
+            if not status.get("allowed") and status.get("reason") in ("no_session", "expired", "session_cap", "already_used") and g.get("guest_id"):
+                fresh = call_proc(f"{APP}.SP_GUEST_START_SESSION", g["guest_id"])
+                if fresh.get("session_id"):
+                    g.update({"session_id": fresh.get("session_id"), "started_at": fresh.get("started_at"), "expires_at": fresh.get("expires_at")})
+                    status = fresh
+            refresh_status(g, status)
+        except Exception as ex:
+            st.error(f"Could not refresh: {str(ex)[:200]}")
+        st.rerun()
+    if b2.button("Log out"):
+        for k in list(st.session_state.keys()):
+            del st.session_state[k]
+        st.rerun()
 
 
 # --------------------------------------------------------------------------
