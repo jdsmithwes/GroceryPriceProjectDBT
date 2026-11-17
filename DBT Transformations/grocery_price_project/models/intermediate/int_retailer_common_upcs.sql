@@ -1,6 +1,10 @@
+-- target_lag='downstream' (2026-11-17): refresh only when a mart that depends on this table refreshes,
+-- so the whole chain wakes COMPUTE_WH once per mart cycle instead of on its own 24 h clock.
+-- Freshness is unchanged: the marts keep their 24-hour lag. Only tables with a dynamic-table
+-- consumer may use this; int_kroger_unpriced_history has none and keeps '24 hours'.
 {{ config(
     materialized='dynamic_table',
-    target_lag='24 hours',
+    target_lag='downstream',
     snowflake_warehouse='COMPUTE_WH',
     refresh_mode='FULL',
     schema='intermediate_common'
