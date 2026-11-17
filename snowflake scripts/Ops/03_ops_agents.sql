@@ -186,6 +186,7 @@ DECLARE
     max_sev       VARCHAR := 'OK';
     min_email_sev VARCHAR;
     emailed       BOOLEAN := FALSE;
+    agent_failed  BOOLEAN := FALSE;
     body          VARCHAR;
 BEGIN
     -- policy
@@ -297,6 +298,13 @@ BEGIN
         answer := (SELECT LISTAGG(c.value:text::STRING, '\n') FROM TABLE(FLATTEN(INPUT => :response:content)) c WHERE c.value:type::STRING = 'text');
         in_tok  := (SELECT SUM(t.value:input_tokens:total::NUMBER)  FROM TABLE(FLATTEN(INPUT => :response:metadata:usage:tokens_consumed)) t);
         out_tok := (SELECT SUM(t.value:output_tokens:total::NUMBER) FROM TABLE(FLATTEN(INPUT => :response:metadata:usage:tokens_consumed)) t);
+        -- an empty answer (budget exhausted, truncated stream) is a failure, never a blank report
+        IF (answer IS NULL OR LENGTH(TRIM(answer)) = 0) THEN
+            answer := 'AGENT RETURNED NO TEXT (status ' || COALESCE(:response:status::STRING, '?') || '; budget ' || :budget_s || ' s / ' || :max_tokens
+                      || ' tokens; model ' || :model || '). The budget probably ran out: raise BUDGET_SECONDS / MAX_TOKENS in MODEL_POLICY or trim the context. Raw response head: '
+                      || LEFT(TO_JSON(:response), 1200) || '\n\nRaw sensor findings follow.';
+            agent_failed := TRUE;
+        END IF;
     END IF;
 
     -- the agent's report is an event too (SOURCE = agent), so the Operations page and the supervisor see it
@@ -318,8 +326,8 @@ BEGIN
     END IF;
 
     UPDATE GROCERYDBTPROJECT.GROCERY_OPS.OPS_RUN
-       SET ENDED_AT = CURRENT_TIMESTAMP(), STATUS = IFF(:response IS NULL, 'failed', 'success'), MAX_SEVERITY = :max_sev, MODEL = :model,
-           INPUT_TOKENS = :in_tok, OUTPUT_TOKENS = :out_tok, EMAIL_SENT = :emailed, RESPONSE = :answer, ERROR = IFF(:response IS NULL, LEFT(:answer, 500), NULL)
+       SET ENDED_AT = CURRENT_TIMESTAMP(), STATUS = IFF(:response IS NULL OR :agent_failed, 'failed', 'success'), MAX_SEVERITY = :max_sev, MODEL = :model,
+           INPUT_TOKENS = :in_tok, OUTPUT_TOKENS = :out_tok, EMAIL_SENT = :emailed, RESPONSE = :answer, ERROR = IFF(:response IS NULL OR :agent_failed, LEFT(:answer, 500), NULL)
      WHERE RUN_ID = :run_id;
 
     RETURN OBJECT_CONSTRUCT('run_id', :run_id, 'agent', :agent_name, 'model', :model, 'max_severity', :max_sev, 'emailed', :emailed, 'input_tokens', :in_tok, 'output_tokens', :out_tok, 'answer', :answer);
