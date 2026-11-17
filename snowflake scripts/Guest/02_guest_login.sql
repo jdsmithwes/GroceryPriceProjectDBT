@@ -146,9 +146,8 @@ BEGIN
         RETURN OBJECT_CONSTRUCT('sent', FALSE, 'reason', 'daily_limit');
     END IF;
 
-    -- older unused codes die when a new one is issued
-    UPDATE GROCERYDBTPROJECT.GROCERY_APP.GUEST_LOGIN_CODE SET USED_AT = CURRENT_TIMESTAMP()
-     WHERE GUEST_ID = :gid AND USED_AT IS NULL;
+    -- Older unused codes stay valid until they expire (a reminder code must still work after
+    -- the guest also clicks "Email me a login code"); the per-hour cap bounds how many are live.
     code := LPAD(UNIFORM(0, 999999, RANDOM())::VARCHAR, 6, '0');
     salt := UUID_STRING();
     hash := SHA2(:salt || :code);  -- functions are not allowed inside a VALUES clause
@@ -172,28 +171,40 @@ AS
 $$
 DECLARE
     em VARCHAR := LOWER(TRIM(:EMAIL));
+    code_in VARCHAR := TRIM(:CODE);
     gid VARCHAR; uname VARCHAR; fname VARCHAR; status VARCHAR;
-    cid VARCHAR; salt VARCHAR; hash VARCHAR; expires TIMESTAMP_TZ; attempts NUMBER; max_attempts NUMBER;
+    matched VARCHAR; live NUMBER; unlocked NUMBER; expired_unused NUMBER; latest_cid VARCHAR; latest_attempts NUMBER; max_attempts NUMBER;
     st VARIANT;
 BEGIN
     SELECT VALUE::NUMBER INTO :max_attempts FROM GROCERYDBTPROJECT.GROCERY_APP.GUEST_SETTING WHERE KEY = 'code_max_attempts';
     SELECT GUEST_ID, GUEST_USERNAME, FIRST_NAME, STATUS INTO :gid, :uname, :fname, :status
     FROM GROCERYDBTPROJECT.GROCERY_APP.GUEST_USER WHERE EMAIL = :em;
     IF (gid IS NULL OR status = 'blocked') THEN RETURN OBJECT_CONSTRUCT('ok', FALSE, 'reason', 'wrong_code'); END IF;
-    SELECT CODE_ID, SALT, CODE_HASH, EXPIRES_AT, ATTEMPTS INTO :cid, :salt, :hash, :expires, :attempts
+
+    -- any unused, unexpired, unlocked code for this guest may match (reminder code or app code)
+    SELECT MAX(CODE_ID) INTO :matched
     FROM GROCERYDBTPROJECT.GROCERY_APP.GUEST_LOGIN_CODE
-    WHERE GUEST_ID = :gid AND USED_AT IS NULL ORDER BY CREATED_AT DESC LIMIT 1;
-    IF (cid IS NULL) THEN RETURN OBJECT_CONSTRUCT('ok', FALSE, 'reason', 'no_code'); END IF;
-    IF (CURRENT_TIMESTAMP() > expires) THEN
-        UPDATE GROCERYDBTPROJECT.GROCERY_APP.GUEST_LOGIN_CODE SET USED_AT = CURRENT_TIMESTAMP() WHERE CODE_ID = :cid;
-        RETURN OBJECT_CONSTRUCT('ok', FALSE, 'reason', 'expired');
+    WHERE GUEST_ID = :gid AND USED_AT IS NULL AND EXPIRES_AT > CURRENT_TIMESTAMP() AND ATTEMPTS < :max_attempts
+      AND CODE_HASH = SHA2(SALT || :code_in);
+    IF (matched IS NULL) THEN
+        -- COALESCE: aggregates over zero rows came back NULL here (seen 2026-11-17)
+        SELECT COALESCE(COUNT_IF(EXPIRES_AT > CURRENT_TIMESTAMP()), 0), COALESCE(COUNT_IF(EXPIRES_AT > CURRENT_TIMESTAMP() AND ATTEMPTS < :max_attempts), 0),
+               COALESCE(COUNT_IF(EXPIRES_AT <= CURRENT_TIMESTAMP()), 0),
+               MAX_BY(CODE_ID, CREATED_AT), COALESCE(MAX_BY(ATTEMPTS, CREATED_AT), 0)
+          INTO :live, :unlocked, :expired_unused, :latest_cid, :latest_attempts
+        FROM GROCERYDBTPROJECT.GROCERY_APP.GUEST_LOGIN_CODE WHERE GUEST_ID = :gid AND USED_AT IS NULL;
+        IF (live = 0) THEN
+            UPDATE GROCERYDBTPROJECT.GROCERY_APP.GUEST_LOGIN_CODE SET USED_AT = CURRENT_TIMESTAMP() WHERE GUEST_ID = :gid AND USED_AT IS NULL;
+            RETURN OBJECT_CONSTRUCT('ok', FALSE, 'reason', IFF(:expired_unused > 0, 'expired', 'no_code'));
+        END IF;
+        IF (unlocked = 0) THEN RETURN OBJECT_CONSTRUCT('ok', FALSE, 'reason', 'locked'); END IF;
+        -- a wrong try counts against every live code, so guessing cannot be spread across them
+        UPDATE GROCERYDBTPROJECT.GROCERY_APP.GUEST_LOGIN_CODE SET ATTEMPTS = ATTEMPTS + 1
+         WHERE GUEST_ID = :gid AND USED_AT IS NULL AND EXPIRES_AT > CURRENT_TIMESTAMP();
+        RETURN OBJECT_CONSTRUCT('ok', FALSE, 'reason', IFF(:latest_attempts + 1 >= :max_attempts, 'locked', 'wrong_code'),
+                                'attempts_left', GREATEST(0, :max_attempts - :latest_attempts - 1));
     END IF;
-    IF (attempts >= max_attempts) THEN RETURN OBJECT_CONSTRUCT('ok', FALSE, 'reason', 'locked'); END IF;
-    IF (SHA2(:salt || TRIM(:CODE)) <> hash) THEN
-        UPDATE GROCERYDBTPROJECT.GROCERY_APP.GUEST_LOGIN_CODE SET ATTEMPTS = ATTEMPTS + 1 WHERE CODE_ID = :cid;
-        RETURN OBJECT_CONSTRUCT('ok', FALSE, 'reason', IFF(:attempts + 1 >= :max_attempts, 'locked', 'wrong_code'), 'attempts_left', GREATEST(0, :max_attempts - :attempts - 1));
-    END IF;
-    UPDATE GROCERYDBTPROJECT.GROCERY_APP.GUEST_LOGIN_CODE SET USED_AT = CURRENT_TIMESTAMP() WHERE CODE_ID = :cid;
+    UPDATE GROCERYDBTPROJECT.GROCERY_APP.GUEST_LOGIN_CODE SET USED_AT = CURRENT_TIMESTAMP() WHERE GUEST_ID = :gid AND USED_AT IS NULL;
     UPDATE GROCERYDBTPROJECT.GROCERY_APP.GUEST_USER
        SET EMAIL_VERIFIED_AT = COALESCE(EMAIL_VERIFIED_AT, CURRENT_TIMESTAMP()), STATUS = 'active',
            LAST_LOGIN_AT = CURRENT_TIMESTAMP(), LAST_SEEN_AT = CURRENT_TIMESTAMP()
