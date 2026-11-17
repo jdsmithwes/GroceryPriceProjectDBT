@@ -481,19 +481,74 @@ with tab_basket:
                 st.success(f"Watching {r.get('product')}: you'll be alerted at a historic low (checked weekly).")
 
 # ---------------------------------------------------------------- Deals
+@st.cache_data(ttl=3600)
+def deals_by_product(retailer: str | None = None, limit: int = 25) -> pd.DataFrame:
+    """Genuine deals, one row per product (not per store); the stores ride along as a JSON array.
+    Same SQL as Streamlit/guest_app/streamlit_app.py — keep them identical."""
+    rfilter = f"AND p.RETAILER = {lit(retailer)}" if retailer else ""
+    return q(f"""
+        WITH d AS (
+            SELECT sp.PRODUCT_KEY, s.STORE_NAME, s.CITY, s.ZIP_CODE, sp.CURRENT_PRICE, sp.CURRENT_REGULAR_PRICE, sp.CURRENT_DISCOUNT_PCT
+            FROM {MARTS}.DBT_FCT_PRODUCT_PRICE_SUMMARY sp
+            JOIN {MARTS}.DBT_DIM_STORE s ON s.STORE_ID = sp.STORE_ID
+            JOIN {MARTS}.DBT_DIM_PRODUCT p ON p.PRODUCT_KEY = sp.PRODUCT_KEY
+            WHERE sp.IS_CURRENTLY_LISTED AND sp.DEAL_QUALITY = 'GENUINE' AND p.IS_FOOD {rfilter}
+        )
+        SELECT p.RETAILER, p.PRODUCT_NAME, p.BRAND, p.SIZE_TEXT, p.IMAGE_URL, d.PRODUCT_KEY,
+               MIN(d.CURRENT_PRICE) AS BEST_PRICE, MEDIAN(d.CURRENT_REGULAR_PRICE) AS REGULAR_PRICE,
+               MAX(d.CURRENT_DISCOUNT_PCT) AS BEST_DISCOUNT_PCT, COUNT(*) AS STORES_ON_DEAL,
+               ARRAY_AGG(OBJECT_CONSTRUCT('store', d.STORE_NAME, 'city', d.CITY, 'zip', d.ZIP_CODE, 'price', d.CURRENT_PRICE, 'regular', d.CURRENT_REGULAR_PRICE))
+                   WITHIN GROUP (ORDER BY d.CURRENT_PRICE, d.STORE_NAME) AS LOCATIONS
+        FROM d JOIN {MARTS}.DBT_DIM_PRODUCT p ON p.PRODUCT_KEY = d.PRODUCT_KEY
+        GROUP BY 1, 2, 3, 4, 5, 6
+        ORDER BY BEST_DISCOUNT_PCT DESC, STORES_ON_DEAL DESC
+        LIMIT {int(limit)}""")
+
+
+def render_deals(deals: pd.DataFrame) -> None:
+    """One compact row per product with a pull-down listing the stores on deal."""
+    if deals.empty:
+        st.info("No genuine deals in the latest collection.")
+        return
+    for _, r in deals.iterrows():
+        c1, c2, c3 = st.columns([1, 6, 3])
+        if r.get("IMAGE_URL"):
+            c1.image(r["IMAGE_URL"], width=56)
+        meta = " · ".join(x for x in [r.get("BRAND"), r.get("SIZE_TEXT"), str(r.get("RETAILER") or "").title()] if x)
+        c2.markdown(f"**{r['PRODUCT_NAME']}**  \n{meta}".replace("$", "\\$"))
+        best, reg, disc = r.get("BEST_PRICE"), r.get("REGULAR_PRICE"), r.get("BEST_DISCOUNT_PCT")
+        price_md = f"**\\${best:.2f}**" if pd.notna(best) else "—"
+        if pd.notna(reg) and reg and reg > (best or 0):
+            price_md += f" ~~\\${reg:.2f}~~"
+        if pd.notna(disc):
+            price_md += f"  \nsave {disc:.0%}"
+        c3.markdown(price_md)
+        locs = r.get("LOCATIONS")
+        if isinstance(locs, str):
+            try:
+                locs = json.loads(locs)
+            except ValueError:
+                locs = []
+        n = int(r.get("STORES_ON_DEAL") or len(locs or []))
+        if str(r.get("RETAILER")).lower() == "walmart":
+            st.caption("Walmart.com (national online price)")
+        else:
+            with st.expander(f"On deal at {n} Kroger store{'s' if n != 1 else ''}: where"):
+                ldf = pd.DataFrame(locs or [])
+                if not ldf.empty:
+                    ldf = ldf.rename(columns={"store": "Store", "city": "City", "zip": "ZIP", "price": "Price", "regular": "Regular"})
+                    show_df(ldf.style.format({"Price": "${:.2f}", "Regular": "${:.2f}"}, na_rep="—"))
+        st.markdown("---")
+
+
 with tab_deals:
     st.subheader("Deals & trends")
-    d1, d2 = st.columns(2)
+    d1, d2 = st.columns([3, 2])
     with d1:
-        st.markdown("**Genuine deals this week** (promo well below the usual regular price, not routine)")
-        show_df(q(f"""
-            SELECT p.RETAILER, p.PRODUCT_NAME, s.STORE_NAME, sp.CURRENT_PRICE, sp.CURRENT_REGULAR_PRICE, sp.CURRENT_DISCOUNT_PCT
-            FROM {MARTS}.DBT_FCT_PRODUCT_PRICE_SUMMARY sp
-            JOIN {MARTS}.DBT_DIM_PRODUCT p ON p.PRODUCT_KEY = sp.PRODUCT_KEY
-            JOIN {MARTS}.DBT_DIM_STORE s ON s.STORE_ID = sp.STORE_ID
-            WHERE sp.IS_CURRENTLY_LISTED AND sp.DEAL_QUALITY = 'GENUINE' AND p.IS_FOOD
-            ORDER BY sp.CURRENT_DISCOUNT_PCT DESC LIMIT 25
-        """))
+        h, f = st.columns([3, 1])
+        h.markdown("**Genuine deals this week** (promo well below the usual regular price, not routine). One row per product; open a row to see which stores.")
+        deal_retailer = f.selectbox("Retailer", ["both", "kroger", "walmart"], key="deal_retailer")
+        render_deals(deals_by_product(None if deal_retailer == "both" else deal_retailer))
     with d2:
         st.markdown("**Biggest 4-week price drops (food, typical store)**")
         show_df(q(f"""
