@@ -510,11 +510,14 @@ def render_deals(deals: pd.DataFrame) -> None:
     if deals.empty:
         st.info("No genuine deals in the latest collection.")
         return
+    def _txt(v) -> str:  # NULLs arrive as NaN (float), which is truthy and breaks str joins
+        return v.strip() if isinstance(v, str) else ""
+
     for _, r in deals.iterrows():
         c1, c2, c3 = st.columns([1, 6, 3])
-        if r.get("IMAGE_URL"):
+        if _txt(r.get("IMAGE_URL")).startswith("http"):
             c1.image(r["IMAGE_URL"], width=56)
-        meta = " · ".join(x for x in [r.get("BRAND"), r.get("SIZE_TEXT"), str(r.get("RETAILER") or "").title()] if x)
+        meta = " · ".join(x for x in [_txt(r.get("BRAND")), _txt(r.get("SIZE_TEXT")), _txt(r.get("RETAILER")).title()] if x)
         c2.markdown(f"**{r['PRODUCT_NAME']}**  \n{meta}".replace("$", "\\$"))
         best, reg, disc = r.get("BEST_PRICE"), r.get("REGULAR_PRICE"), r.get("BEST_DISCOUNT_PCT")
         price_md = f"**\\${best:.2f}**" if pd.notna(best) else "—"
