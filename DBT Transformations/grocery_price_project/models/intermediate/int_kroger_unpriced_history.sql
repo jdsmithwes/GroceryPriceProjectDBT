@@ -1,3 +1,5 @@
+-- Keeps target_lag='24 hours' on purpose: this table has no dynamic-table consumer (only tests
+-- read it), and a 'downstream' lag with no downstream dynamic table would never refresh.
 {{ config(
     materialized='dynamic_table',
     target_lag='24 hours',
