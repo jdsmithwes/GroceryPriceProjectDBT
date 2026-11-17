@@ -1,0 +1,78 @@
+-- =============================================================================
+-- 07_weekly_report.sql — the Sunday weekly report (owner request 2026-11-17)
+--
+-- The supervisor's DIGEST run (TASK_OPS_WEEKLY, Sun 09:00 ET) already emails
+-- the owner. This adds what it needs to report "each area and what was
+-- implemented":
+--   * OPS_CHANGELOG: one row per change shipped (merged GitHub PRs via
+--     Agent/ops/log_merged_prs.py, manual entries via SP_LOG_CHANGE). Audited
+--     config changes come from CONFIG_AUDIT and need no extra logging.
+--   * SP_RUN_AGENT (03_ops_agents.sql) now passes changes_this_week and
+--     guest_week to the supervisor; its prompt v2 writes the report by area.
+--
+-- Run as ACCOUNTADMIN after 03. Sandbox variant:
+--   sed -E 's/GROCERY_OPS([^_A-Za-z0-9]|$)/GROCERY_DEV_OPS\1/g; s/GROCERY_OPS_WH/COMPUTE_WH/g; /^-- PROD ONLY/,$d'
+-- =============================================================================
+USE ROLE ACCOUNTADMIN;
+USE SCHEMA GROCERYDBTPROJECT.GROCERY_OPS;
+
+CREATE TABLE IF NOT EXISTS GROCERYDBTPROJECT.GROCERY_OPS.OPS_CHANGELOG (
+    CHANGE_ID   VARCHAR NOT NULL DEFAULT UUID_STRING() PRIMARY KEY,
+    CHANGED_AT  TIMESTAMP_TZ NOT NULL,
+    AREA        VARCHAR NOT NULL COMMENT 'ingestion | quality | cost | performance | improvement | product | guest | ops | docs',
+    TITLE       VARCHAR NOT NULL,
+    DETAIL      VARCHAR,
+    SOURCE      VARCHAR NOT NULL COMMENT 'github_pr | manual | agent',
+    REF         VARCHAR COMMENT 'PR number/URL or other reference; (SOURCE, REF) is the idempotency key',
+    RECORDED_BY VARCHAR DEFAULT CURRENT_USER(),
+    RECORDED_AT TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP()
+);
+
+CREATE OR REPLACE PROCEDURE GROCERYDBTPROJECT.GROCERY_OPS.SP_LOG_CHANGE(
+    AREA VARCHAR, TITLE VARCHAR, DETAIL VARCHAR, SOURCE VARCHAR DEFAULT 'manual', REF VARCHAR DEFAULT NULL, CHANGED_AT TIMESTAMP_TZ DEFAULT NULL)
+RETURNS VARIANT
+LANGUAGE SQL
+COMMENT = 'Records one shipped change for the weekly report. Idempotent on (SOURCE, REF) when REF is given.'
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+    ts TIMESTAMP_TZ := COALESCE(:CHANGED_AT, CURRENT_TIMESTAMP());
+    n NUMBER := 0;
+BEGIN
+    IF (:REF IS NOT NULL) THEN
+        SELECT COUNT(*) INTO :n FROM GROCERYDBTPROJECT.GROCERY_OPS.OPS_CHANGELOG WHERE SOURCE = :SOURCE AND REF = :REF;
+    END IF;
+    IF (n > 0) THEN
+        UPDATE GROCERYDBTPROJECT.GROCERY_OPS.OPS_CHANGELOG SET AREA = :AREA, TITLE = :TITLE, DETAIL = :DETAIL, CHANGED_AT = :ts WHERE SOURCE = :SOURCE AND REF = :REF;
+        RETURN OBJECT_CONSTRUCT('updated', TRUE, 'ref', :REF);
+    END IF;
+    INSERT INTO GROCERYDBTPROJECT.GROCERY_OPS.OPS_CHANGELOG (CHANGED_AT, AREA, TITLE, DETAIL, SOURCE, REF)
+    SELECT :ts, :AREA, :TITLE, :DETAIL, :SOURCE, :REF;
+    RETURN OBJECT_CONSTRUCT('inserted', TRUE, 'ref', :REF);
+END;
+$$;
+
+-- What the week looked like, for humans and for the agent context
+CREATE OR REPLACE VIEW GROCERYDBTPROJECT.GROCERY_OPS.V_CHANGES_THIS_WEEK AS
+SELECT CHANGED_AT, AREA, TITLE, LEFT(DETAIL, 400) AS DETAIL, SOURCE, REF
+FROM GROCERYDBTPROJECT.GROCERY_OPS.OPS_CHANGELOG
+WHERE CHANGED_AT >= DATEADD(day, -7, CURRENT_TIMESTAMP())
+UNION ALL
+SELECT CHANGED_AT, 'config', TABLE_NAME || ' ' || KEY_VALUE, LEFT(REASON, 400), 'config_audit', AUDIT_ID
+FROM GROCERYDBTPROJECT.GROCERY_OPS.CONFIG_AUDIT
+WHERE CHANGED_AT >= DATEADD(day, -7, CURRENT_TIMESTAMP())
+ORDER BY CHANGED_AT;
+
+-- PROD ONLY ------------------------------------------------------------------
+GRANT OWNERSHIP ON TABLE GROCERYDBTPROJECT.GROCERY_OPS.OPS_CHANGELOG TO ROLE GROCERY_OPS_ROLE COPY CURRENT GRANTS;
+GRANT OWNERSHIP ON PROCEDURE GROCERYDBTPROJECT.GROCERY_OPS.SP_LOG_CHANGE(VARCHAR, VARCHAR, VARCHAR, VARCHAR, VARCHAR, TIMESTAMP_TZ) TO ROLE GROCERY_OPS_ROLE COPY CURRENT GRANTS;
+GRANT OWNERSHIP ON VIEW GROCERYDBTPROJECT.GROCERY_OPS.V_CHANGES_THIS_WEEK TO ROLE GROCERY_OPS_ROLE COPY CURRENT GRANTS;
+MERGE INTO GROCERYDBTPROJECT.GROCERY_OPS.AGENT_REGISTRY t
+USING (SELECT 'weekly_report' AS AGENT_NAME, 'report' AS KIND, 'supervisor' AS DOMAIN, 'snowflake' AS PLATFORM,
+              'SP_RUN_AGENT(supervisor, digest) from TASK_OPS_WEEKLY; reads OPS_CHANGELOG + CONFIG_AUDIT (V_CHANGES_THIS_WEEK) and V_GUEST_WEEK; emails the owner' AS RUNTIME_OBJECT,
+              'Sundays 09:00 ET' AS SCHEDULE_TEXT, 168 AS EXPECTED_INTERVAL_HOURS, 'ops_digest' AS MODEL_TASK,
+              'Weekly report by area (ingestion, quality, cost, performance, guests, improvement) plus what was implemented this week' AS DESCRIPTION) s
+ON t.AGENT_NAME = s.AGENT_NAME
+WHEN NOT MATCHED THEN INSERT (AGENT_NAME, KIND, DOMAIN, PLATFORM, RUNTIME_OBJECT, SCHEDULE_TEXT, EXPECTED_INTERVAL_HOURS, MODEL_TASK, DESCRIPTION)
+    VALUES (s.AGENT_NAME, s.KIND, s.DOMAIN, s.PLATFORM, s.RUNTIME_OBJECT, s.SCHEDULE_TEXT, s.EXPECTED_INTERVAL_HOURS, s.MODEL_TASK, s.DESCRIPTION);
