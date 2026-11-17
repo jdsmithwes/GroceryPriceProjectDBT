@@ -366,21 +366,29 @@ def sign_up_gate() -> None:
                                                      "code_note": "That email is already registered, so we sent a login code instead." if purpose == "login" else None})
                             st.rerun()
             with t_login:
+                st.caption("Step 1: ask for a code. Step 2: enter it here (codes from a reminder email work here too).")
                 with st.form("guest_login"):
                     lemail = st.text_input("Email you registered with", max_chars=120)
-                    lgo = st.form_submit_button("Email me a login code", type="primary")
-                if lgo:
-                    em = lemail.strip().lower()
-                    if not EMAIL_RE.match(em):
-                        st.error("That email address does not look valid.")
+                    lcode = st.text_input("6-digit code (leave blank to request one)", max_chars=6)
+                    b1, b2 = st.columns(2)
+                    lgo = b1.form_submit_button("Email me a login code")
+                    lverify = b2.form_submit_button("Log in with my code", type="primary")
+                em = lemail.strip().lower()
+                if (lgo or lverify) and not EMAIL_RE.match(em):
+                    st.error("That email address does not look valid.")
+                elif lverify:
+                    if not lcode.strip():
+                        st.error("Enter the 6-digit code from your email, or ask for a new one.")
                     else:
-                        with st.spinner("Sending your code..."):
-                            sent, err = issue_and_send(em, "login")
-                        if not sent:
-                            st.error(err)
-                        else:
-                            st.session_state.update({"code_stage": True, "pending_email": em, "code_purpose": "login", "code_note": None})
-                            st.rerun()
+                        finish_login(em, lcode.strip())
+                elif lgo:
+                    with st.spinner("Sending your code..."):
+                        sent, err = issue_and_send(em, "login")
+                    if not sent:
+                        st.error(err)
+                    else:
+                        st.session_state.update({"code_stage": True, "pending_email": em, "code_purpose": "login", "code_note": None})
+                        st.rerun()
     with c2:
         st.markdown("**What it can answer**")
         for fam, desc in FAMILIES.items():
