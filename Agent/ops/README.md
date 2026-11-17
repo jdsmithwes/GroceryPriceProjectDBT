@@ -30,7 +30,7 @@ whitelist of actions (`03_autonomy.sql`, not yet written) can run, gated by
 | Data quality & validation agent | `SP_RUN_AGENT('quality')` | daily 07:00, Sun 09:00 | Sonnet 5.5 |
 | Cost monitoring agent | `SP_RUN_AGENT('cost')` | daily 07:00 | Haiku 5.5 |
 | Job performance & observability agent | `SP_RUN_AGENT('performance')` | daily 07:00 | Sonnet 5.5 |
-| Continuous improvement agent | `SP_RUN_AGENT('improvement')` | Sun 09:00 | Opus 5.5 |
+| Continuous improvement agent | `SP_RUN_AGENT('improvement')` — standing mandate (prompt v2, 2026-11-17): make the architecture cheaper and faster every week from evidence; calls `TOOL_GET_COST_HOTSPOTS` first (warehouse idle share, services, top queries, dynamic-table no-op refreshes, agent tokens, search, pipes, tasks, Fargate, guests); output CHEAPER / FASTER / CHECKLIST / WATCHLIST | Sun 09:00 | Opus 5.5 |
 | Supervisor | `SP_RUN_AGENT('supervisor')`, `('supervisor','digest')` on Sundays | daily 07:00, Sun 09:00 | Sonnet 5.5 / Opus 5.5 (digest) |
 | Tasks | `TASK_OPS_DAILY`, `TASK_OPS_FRI`, `TASK_OPS_SAT`, `TASK_OPS_WEEKLY` | as above | — |
 | Control plane, read | Snowsight dashboard **Grocery Ops** (tile SQL in `Agent/ops/dashboard_tiles.sql`) over `GROCERY_OPS.*` and the semantic view `GROCERY_OPS.SV_OPS` | on open | — |
