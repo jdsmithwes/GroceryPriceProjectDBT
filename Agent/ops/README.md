@@ -126,6 +126,24 @@ between you and the ops tables.
   scheduled runs still go through `SP_RUN_AGENT`. Each mirror can be
   test-driven in its chat with the three read-only tools.
 
+## The Sunday weekly report (owner request 2026-11-17)
+
+`TASK_OPS_WEEKLY` ends with `SP_RUN_AGENT('supervisor', 'digest')`, which
+always emails the owner: subject `[grocery-ops][supervisor][DIGEST] weekly
+report <date>`. Prompt v2 (`Agent/ops/prompts/agent_supervisor.md`) writes it
+as: HEADLINE · THIS WEEK BY AREA (ingestion, data quality, cost, performance,
+guest app & shopper agent, continuous improvement) · IMPLEMENTED THIS WEEK ·
+OPEN ITEMS · NEXT WEEK. Its extra inputs:
+
+- `GROCERY_OPS.OPS_CHANGELOG` — what shipped. Merged GitHub PRs land there via
+  `python3 Agent/ops/log_merged_prs.py` (run after merging; `--days 90` to
+  backfill, `--dry-run` to preview); anything else via
+  `CALL GROCERY_OPS.SP_LOG_CHANGE(area, title, detail)`. Audited config changes
+  (`CONFIG_AUDIT`) are included automatically. `V_CHANGES_THIS_WEEK` shows the
+  7-day window the report sees.
+- `GROCERY_APP.V_GUEST_WEEK` plus guest counts (sign-ups, pending, sessions,
+  how sessions ended) for the guest block.
+
 ## Changing things (all audited in `CONFIG_AUDIT`)
 
 - **Model for a task**: `CALL GROCERY_OPS.SP_SET_MODEL_POLICY('ops_cost', 'claude-sonnet-5-5', 'why')`

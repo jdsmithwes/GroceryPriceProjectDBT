@@ -151,8 +151,18 @@ Rules. Quantify everything from the tool output: baseline (credits/month or seco
 Output exactly these sections: CHEAPER (numbered, <= 3: change, objects, baseline -> target with arithmetic, credits/month saved, risk, how to verify, effort S/M/L, NEW/REPEAT/DONE), FASTER (numbered, <= 3: same fields with seconds or minutes saved and who feels it: shopper, owner, or pipeline), CHECKLIST (one line per item above: OK or finding), WATCHLIST (<= 3 trends to keep an eye on). If the evidence truly shows nothing worth changing in a section, write "nothing this week" and the one number that proves it.
 $$ WHERE AGENT_NAME = 'agent_improvement';
 
-UPDATE GROCERYDBTPROJECT.GROCERY_OPS.AGENT_REGISTRY SET PROMPT_VERSION = 'v1', TOOLS = PARSE_JSON('["get_runbook","get_metric_history"]'), INSTRUCTIONS = $$
-You are the supervisor of an operations layer made of deterministic sensors and five domain agents (ingestion, quality, cost, performance, improvement). You receive: every open finding with its severity, each domain agent's latest report, the component registry with last-run times and silence flags, and today's run log. Your job: (1) confirm every scheduled component ran when due - a silent component is itself a CRIT, (2) correlate across domains (a cost spike plus a long task, a missing run plus a stale mart), (3) decide one overall severity and the single most important thing for the owner to do, (4) list what needs a human, in priority order, with the runbook action, and (5) say what is fine. Never restate everything; be short and decisive. In DIGEST mode (weekly) also report: runs expected vs seen this week, data health (stores covered, rows, outliers), credits month-to-date vs 20 and per monitor with error-budget burn, performance (tasks, refreshes, pipes, eval score), open items with age, and the improvement proposals. Output sections: STATUS (one line: OK | WARN | CRIT and why), ACTIONS (numbered, owner steps), CORRELATIONS, FINE (one line), and in digest mode WEEKLY DIGEST.
+UPDATE GROCERYDBTPROJECT.GROCERY_OPS.AGENT_REGISTRY SET PROMPT_VERSION = 'v2', TOOLS = PARSE_JSON('["get_runbook","get_metric_history"]'), INSTRUCTIONS = $$
+You are the supervisor of an operations layer made of deterministic sensors and five domain agents (ingestion, quality, cost, performance, improvement), watching a weekly grocery price pipeline, a shopper-facing Cortex agent, and a metered public guest app. You receive: every open finding with its severity, each domain agent's latest report, the component registry with last-run times and silence flags, today's run log, guest_week (sign-ups, sessions, questions, guest credits vs the 5-credit weekly cap), and changes_this_week (code changes merged this week and audited config changes). Never invent a number: every figure comes from the context, and if something is missing say "not reported".
+
+DAILY mode: (1) confirm every scheduled component ran when due - a silent component is itself a CRIT, (2) correlate across domains (a cost spike plus a long task, a missing run plus a stale mart), (3) decide one overall severity and the single most important thing for the owner to do, (4) list what needs a human, in priority order, with the runbook action, (5) say what is fine. Short and decisive. Sections: STATUS (one line: OK | WARN | CRIT and why), ACTIONS (numbered, owner steps), CORRELATIONS, FINE (one line).
+
+DIGEST mode is the Sunday weekly report, emailed to the owner, who reads it on a phone. Sections in this order:
+HEADLINE: one sentence for the week and the overall status (OK | WARN | CRIT).
+THIS WEEK BY AREA: one short block (2-4 lines, numbers first) for each of: Ingestion (runs expected vs seen, stores covered, rows, anything missed); Data quality (freshness, outliers, test ports, store coverage); Cost (credits month-to-date vs 20 and per monitor group, biggest movers, month-end projection, error-budget burn); Performance (tasks, dynamic-table refreshes, pipes, agent latency, eval score); Guest app & shopper agent (new sign-ups, sessions, questions, guest credits vs 5, limits hit, anything guests ran into); Continuous improvement (each CHEAPER/FASTER proposal from the improvement agent this week in one line with NEW/REPEAT/DONE, and the one you would do first).
+IMPLEMENTED THIS WEEK: one line per item in changes_this_week - area, what changed, and what it means for the owner in plain words; group config changes together; write "nothing shipped this week" if the list is empty.
+OPEN ITEMS: open findings with their age, oldest first, at most 8, each with the runbook action.
+NEXT WEEK: numbered owner actions (most valuable first), then what you will watch.
+Keep the whole report under 70 lines, plain text, no tables wider than a phone.
 $$ WHERE AGENT_NAME = 'agent_supervisor';
 
 ------------------------------------------------------------------------------
@@ -225,7 +235,17 @@ BEGIN
         'runs_today', IFF(:DOMAIN = 'supervisor',
                         (SELECT ARRAY_AGG(OBJECT_CONSTRUCT('kind', KIND, 'agent', AGENT_NAME, 'status', STATUS, 'started_at', STARTED_AT, 'seconds', TIMESTAMPDIFF(second, STARTED_AT, ENDED_AT), 'tokens', INPUT_TOKENS + OUTPUT_TOKENS))
                          FROM GROCERYDBTPROJECT.GROCERY_OPS.OPS_RUN WHERE STARTED_AT >= DATEADD(hour, -26, CURRENT_TIMESTAMP()) AND RUN_ID <> :run_id), NULL),
-        'runbook_topics', (SELECT ARRAY_AGG(TOPIC) FROM GROCERYDBTPROJECT.GROCERY_OPS.OPS_RUNBOOK)
+        'runbook_topics', (SELECT ARRAY_AGG(TOPIC) FROM GROCERYDBTPROJECT.GROCERY_OPS.OPS_RUNBOOK),
+        'changes_this_week', IFF(:DOMAIN = 'supervisor',
+                        (SELECT ARRAY_AGG(OBJECT_CONSTRUCT('at', CHANGED_AT, 'area', AREA, 'title', TITLE, 'detail', DETAIL, 'source', SOURCE, 'ref', REF)) WITHIN GROUP (ORDER BY CHANGED_AT)
+                         FROM GROCERYDBTPROJECT.GROCERY_OPS.V_CHANGES_THIS_WEEK), NULL),
+        'guest_week', IFF(:DOMAIN = 'supervisor',
+                        (SELECT OBJECT_CONSTRUCT('week_start', w.WEEK_START, 'sessions', w.WEEK_SESSIONS, 'questions', w.WEEK_QUESTIONS, 'est_credits', ROUND(w.WEEK_EST_CREDITS, 3), 'weekly_cap_credits', w.WEEKLY_CAP,
+                                'guests_total', (SELECT COUNT(*) FROM GROCERYDBTPROJECT.GROCERY_APP.GUEST_USER WHERE EMAIL NOT LIKE '%@example.com'),
+                                'guests_pending_verification', (SELECT COUNT(*) FROM GROCERYDBTPROJECT.GROCERY_APP.GUEST_USER WHERE STATUS = 'pending' AND EMAIL NOT LIKE '%@example.com'),
+                                'new_guests_7d', (SELECT COUNT(*) FROM GROCERYDBTPROJECT.GROCERY_APP.GUEST_USER WHERE CREATED_AT >= DATEADD(day, -7, CURRENT_TIMESTAMP()) AND EMAIL NOT LIKE '%@example.com'),
+                                'sessions_ended_by', (SELECT ARRAY_AGG(OBJECT_CONSTRUCT('reason', END_REASON, 'n', n)) FROM (SELECT END_REASON, COUNT(*) n FROM GROCERYDBTPROJECT.GROCERY_APP.GUEST_SESSION WHERE STARTED_AT >= DATEADD(day, -7, CURRENT_TIMESTAMP()) AND END_REASON IS NOT NULL GROUP BY 1)))
+                         FROM GROCERYDBTPROJECT.GROCERY_APP.V_GUEST_WEEK w), NULL)
     ));
 
     max_sev := (SELECT COALESCE(MAX(CASE SEVERITY WHEN 'CRIT' THEN 'CRIT' END), MAX(CASE SEVERITY WHEN 'WARN' THEN 'WARN' END), 'OK')
@@ -292,7 +312,7 @@ BEGIN
                  FROM GROCERYDBTPROJECT.GROCERY_OPS.OPS_EVENT WHERE STATUS = 'open' AND SOURCE IN ('sensor', 'alert') AND (:DOMAIN IN ('supervisor', 'improvement') OR DOMAIN = :DOMAIN)) ||
                 '\n\n--- run ---\nrun_id: ' || :run_id || '\nagent: ' || :agent_name || '\nmodel: ' || :model || ' (' || :prompt_version || ')\ntokens: ' || COALESCE(:in_tok::STRING, '?') || ' in / ' || COALESCE(:out_tok::STRING, '?') || ' out';
         LET email_sev VARCHAR := IFF(:MODE = 'digest', 'DIGEST', :max_sev);
-        LET email_title VARCHAR := IFF(:MODE = 'digest', 'weekly digest ', '') || TO_VARCHAR(CURRENT_DATE());
+        LET email_title VARCHAR := IFF(:MODE = 'digest', 'weekly report ', '') || TO_VARCHAR(CURRENT_DATE());
         CALL GROCERYDBTPROJECT.GROCERY_OPS.SP_SEND_OPS_EMAIL(:DOMAIN, :email_sev, :email_title, :body) INTO :emailed;
         UPDATE GROCERYDBTPROJECT.GROCERY_OPS.OPS_EVENT SET EMAILED_AT = CURRENT_TIMESTAMP() WHERE STATUS = 'open' AND EMAILED_AT IS NULL AND (:DOMAIN IN ('supervisor', 'improvement') OR DOMAIN = :DOMAIN);
     END IF;
