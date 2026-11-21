@@ -10,8 +10,13 @@
 --       'GROCERYDBTPROJECT.GROCERY_DEV_ML', 6, 8,
 --       'GROCERYDBTPROJECT.GROCERY_DEV_MARTS.DBT_DIM_FORECAST_SCOPE');   -- dbt view; NULL = all eligible (don't)
 --
--- Run it on GROCERY_ML_WH (Medium, auto-suspend 60s), not COMPUTE_WH: multi-series
--- training parallelizes across nodes. The first unscoped attempt (6,733 series, XS)
+-- It always runs on GROCERY_ML_WH (Medium, auto-suspend 60s), never COMPUTE_WH:
+-- multi-series training parallelizes across nodes. Since 2026-11-21 the procedure
+-- enforces this itself: called from any other warehouse it switches to
+-- GROCERY_ML_WH for the run and switches the caller back afterward (also on
+-- error), and it refuses an unscoped run (SCOPE_TABLE NULL). Dev iterations: pass
+-- a small sample scope table (e.g. GROCERY_DEV_ML.FORECAST_SCOPE_SAMPLE, 100
+-- series, ~0.19 credits) before the full dim_forecast_scope (145 series). The first unscoped attempt (6,733 series, XS)
 -- ran 4h23m before being cancelled and cost ~4.7 credits (2026-11-15).
 -- Measured on GROCERY_ML_WH (Medium) the same day: 100 series = 144 s training
 -- + 28 s forecasting, ~0.19 credits -> ~0.002 credits per series per week.
@@ -48,9 +53,8 @@ CREATE OR REPLACE PROCEDURE GROCERYDBTPROJECT.GROCERY_DEV_ML.SP_REFRESH_PRICE_FO
     HORIZON_WEEKS INTEGER,  -- weeks to forecast
     MIN_WEEKS INTEGER,      -- minimum observed weeks to train a series
     SCOPE_TABLE VARCHAR     -- fully qualified table/view with a PRODUCT_KEY column: only
-                            -- these series are trained. NULL = every eligible series
-                            -- (6,733 as of 2026-11-15 — 4h+ on XS; never run unscoped
-                            -- without timing a sample first).
+                            -- these series are trained. Required: NULL is refused (every
+                            -- eligible series was 6,733 on 2026-11-15, 4h+ on XS).
 )
 RETURNS VARCHAR
 LANGUAGE SQL
@@ -65,7 +69,17 @@ DECLARE
     n_series INTEGER;
     n_rows INTEGER;
     n_forecast_series INTEGER;
+    ml_wh VARCHAR DEFAULT 'GROCERY_ML_WH';
+    caller_wh VARCHAR DEFAULT CURRENT_WAREHOUSE();
+    result VARCHAR;
 BEGIN
+    IF (SCOPE_TABLE IS NULL) THEN
+        RETURN 'refused: SCOPE_TABLE is required (an unscoped run trains every eligible series, 6,733 on 2026-11-15, and ran 4h+). Pass dim_forecast_scope, or a sample table while iterating.';
+    END IF;
+    -- forecasts never run on COMPUTE_WH: switch to the ML warehouse, restore the caller's at the end
+    IF (caller_wh IS NULL OR caller_wh <> ml_wh) THEN
+        USE WAREHOUSE IDENTIFIER(:ml_wh);
+    END IF;
     -- EXECUTE IMMEDIATE and IDENTIFIER() take a string or a variable, not a
     -- || expression, so each statement is assembled into sql_text first.
     sql_text := 'CREATE OR REPLACE VIEW ' || training_view || ' AS
@@ -126,8 +140,18 @@ BEGIN
         ', ''' || CURRENT_WAREHOUSE() || ''')';
     EXECUTE IMMEDIATE :sql_text;
 
-    RETURN 'trained ' || n_series || ' series (' || n_rows || ' rows); forecast ' ||
-           n_forecast_series || ' series x ' || HORIZON_WEEKS || ' weeks';
+    result := 'trained ' || n_series || ' series (' || n_rows || ' rows); forecast ' ||
+              n_forecast_series || ' series x ' || HORIZON_WEEKS || ' weeks on ' || ml_wh;
+    IF (caller_wh IS NOT NULL AND caller_wh <> ml_wh) THEN
+        USE WAREHOUSE IDENTIFIER(:caller_wh);
+    END IF;
+    RETURN result;
+EXCEPTION
+    WHEN OTHER THEN
+        IF (caller_wh IS NOT NULL AND caller_wh <> ml_wh) THEN
+            USE WAREHOUSE IDENTIFIER(:caller_wh);
+        END IF;
+        RAISE;
 END;
 $$;
 
