@@ -14,6 +14,10 @@ ALTER TABLE GROCERYDBTPROJECT.GROCERY_OPS.OPS_EVENT ADD COLUMN IF NOT EXISTS PER
 ------------------------------------------------------------------------------
 -- Shared time helpers: the collection week runs Friday 12:00 ET -> next Friday.
 ------------------------------------------------------------------------------
+-- Time zones (fixed 2026-11-21): the account session time zone is America/Los_Angeles. ORCHESTRATION_JOB_RUNS
+-- timestamps are UTC TIMESTAMP_NTZ; raw COLLECTED_AT and TASK_HISTORY are zoned. Never cast an NTZ value to
+-- TIMESTAMP_TZ/LTZ or CURRENT_TIMESTAMP() to NTZ: both silently apply the Pacific session zone. Build Eastern
+-- wall-clock times with TIMESTAMP_TZ_FROM_PARTS(..., 'America/New_York') and compare NTZ only with UTC NTZ.
 CREATE OR REPLACE VIEW GROCERYDBTPROJECT.GROCERY_OPS.V_COLLECTION_WEEK AS
 WITH base AS (
     SELECT CONVERT_TIMEZONE('America/New_York', CURRENT_TIMESTAMP())::DATE AS today_et
@@ -24,11 +28,11 @@ WITH base AS (
     FROM base
 )
 SELECT week_friday,
-       CONVERT_TIMEZONE('America/New_York', 'UTC', TO_TIMESTAMP_NTZ(week_friday || ' 12:00:00'))::TIMESTAMP_TZ AS week_start_utc,
-       CONVERT_TIMEZONE('America/New_York', 'UTC', TO_TIMESTAMP_NTZ(week_friday || ' 17:00:00'))::TIMESTAMP_TZ AS friday_slot_utc,
-       CONVERT_TIMEZONE('America/New_York', 'UTC', TO_TIMESTAMP_NTZ((week_friday + 1) || ' 09:00:00'))::TIMESTAMP_TZ AS saturday_slot_utc,
-       CONVERT_TIMEZONE('America/New_York', 'UTC', TO_TIMESTAMP_NTZ((week_friday + 1) || ' 16:00:00'))::TIMESTAMP_TZ AS complete_after_utc,
-       CURRENT_TIMESTAMP() >= CONVERT_TIMEZONE('America/New_York', 'UTC', TO_TIMESTAMP_NTZ((week_friday + 1) || ' 16:00:00'))::TIMESTAMP_TZ AS is_complete_phase
+       TIMESTAMP_TZ_FROM_PARTS(YEAR(week_friday), MONTH(week_friday), DAY(week_friday), 12, 0, 0, 0, 'America/New_York') AS week_start_utc,
+       TIMESTAMP_TZ_FROM_PARTS(YEAR(week_friday), MONTH(week_friday), DAY(week_friday), 17, 0, 0, 0, 'America/New_York') AS friday_slot_utc,
+       TIMESTAMP_TZ_FROM_PARTS(YEAR((week_friday + 1)), MONTH((week_friday + 1)), DAY((week_friday + 1)), 9, 0, 0, 0, 'America/New_York') AS saturday_slot_utc,
+       TIMESTAMP_TZ_FROM_PARTS(YEAR((week_friday + 1)), MONTH((week_friday + 1)), DAY((week_friday + 1)), 16, 0, 0, 0, 'America/New_York') AS complete_after_utc,
+       CURRENT_TIMESTAMP() >= TIMESTAMP_TZ_FROM_PARTS(YEAR((week_friday + 1)), MONTH((week_friday + 1)), DAY((week_friday + 1)), 16, 0, 0, 0, 'America/New_York') AS is_complete_phase
 FROM fri;
 
 ------------------------------------------------------------------------------
@@ -52,7 +56,7 @@ WITH weeks AS (
 ), evaluated AS (
     SELECT s.*,
            r.STATUS, r.STARTED_AT, r.COMPLETED_AT,
-           CURRENT_TIMESTAMP()::TIMESTAMP_NTZ >= DATEADD(hour, 10, s.slot_utc) AS is_due
+           CONVERT_TIMEZONE('UTC', CURRENT_TIMESTAMP())::TIMESTAMP_NTZ >= DATEADD(hour, 10, s.slot_utc) AS is_due
     FROM slots s
     LEFT JOIN GROCERYDBTPROJECT.JOB_PERFORMANCE.ORCHESTRATION_JOB_RUNS r
            ON r.SOURCE = s.source AND r.RUN_MODE = s.run_mode
@@ -62,7 +66,7 @@ WITH weeks AS (
 SELECT IFF(STATUS = 'failed', 'run_failed', 'run_missing')                              AS CHECK_NAME,
        source || ' ' || run_mode                                                          AS SUBJECT,
        slot_date::VARCHAR                                                                 AS PERIOD_KEY,
-       slot_utc::TIMESTAMP_TZ                                                             AS PERIOD_TS,
+       TIMESTAMP_TZ_FROM_PARTS(YEAR(slot_utc), MONTH(slot_utc), DAY(slot_utc), HOUR(slot_utc), MINUTE(slot_utc), SECOND(slot_utc), 0, 'UTC') AS PERIOD_TS,
        IFF(STATUS = 'success', 0, 1)                                                      AS METRIC_VALUE,  -- 1 = missing or failed
        OBJECT_CONSTRUCT('status', COALESCE(STATUS, IFF(is_due, 'missing', 'pending')), 'started_at', STARTED_AT, 'completed_at', COMPLETED_AT) AS OBSERVED,
        OBJECT_CONSTRUCT('slot_utc', slot_utc, 'window_hours', 10)                        AS EXPECTED,
@@ -464,8 +468,8 @@ WITH h AS (
            CONVERT_TIMEZONE('America/New_York', 'UTC', TO_TIMESTAMP_NTZ((DATE_TRUNC(week, CONVERT_TIMEZONE('America/New_York', CURRENT_TIMESTAMP())::DATE) - 1) || ' 06:00:00')) AS last_sunday_slot_utc
 ), fm AS (
     SELECT f.task_name, f.last_sunday_slot_utc,
-           (SELECT COUNT(*) FROM h WHERE h.task_name = f.task_name AND h.STATE = 'SUCCEEDED' AND h.SCHEDULED_TIME >= DATEADD(hour, -1, f.last_sunday_slot_utc)) AS successes,
-           CURRENT_TIMESTAMP()::TIMESTAMP_NTZ >= DATEADD(hour, 3, f.last_sunday_slot_utc) AS is_due
+           (SELECT COUNT(*) FROM h WHERE h.task_name = f.task_name AND h.STATE = 'SUCCEEDED' AND h.SCHEDULED_TIME >= DATEADD(hour, -1, TIMESTAMP_TZ_FROM_PARTS(YEAR(f.last_sunday_slot_utc), MONTH(f.last_sunday_slot_utc), DAY(f.last_sunday_slot_utc), HOUR(f.last_sunday_slot_utc), MINUTE(f.last_sunday_slot_utc), SECOND(f.last_sunday_slot_utc), 0, 'UTC'))) AS successes,
+           CONVERT_TIMEZONE('UTC', CURRENT_TIMESTAMP())::TIMESTAMP_NTZ >= DATEADD(hour, 3, f.last_sunday_slot_utc) AS is_due
     FROM forecast_missed f
 )
 SELECT 'task_failed_or_missed' AS CHECK_NAME, task_name AS SUBJECT, SCHEDULED_TIME::DATE::VARCHAR AS PERIOD_KEY, SCHEDULED_TIME::TIMESTAMP_TZ AS PERIOD_TS,
@@ -473,7 +477,7 @@ SELECT 'task_failed_or_missed' AS CHECK_NAME, task_name AS SUBJECT, SCHEDULED_TI
        'CRIT' AS SEVERITY, task_name || ' ' || STATE || ' at ' || SCHEDULED_TIME || ': ' || COALESCE(ERROR_MESSAGE, '') AS MESSAGE
 FROM failed
 UNION ALL
-SELECT 'task_failed_or_missed', task_name, last_sunday_slot_utc::DATE::VARCHAR, last_sunday_slot_utc::TIMESTAMP_TZ,
+SELECT 'task_failed_or_missed', task_name, last_sunday_slot_utc::DATE::VARCHAR, TIMESTAMP_TZ_FROM_PARTS(YEAR(last_sunday_slot_utc), MONTH(last_sunday_slot_utc), DAY(last_sunday_slot_utc), HOUR(last_sunday_slot_utc), MINUTE(last_sunday_slot_utc), SECOND(last_sunday_slot_utc), 0, 'UTC'),
        IFF(successes > 0, 0, 1), OBJECT_CONSTRUCT('successes_since_slot', successes, 'slot_utc', last_sunday_slot_utc), OBJECT_CONSTRUCT('successes', 1),
        CASE WHEN successes > 0 THEN 'OK' WHEN is_due THEN 'CRIT' ELSE 'INFO' END,
        IFF(successes > 0, 'forecast task succeeded for ' || last_sunday_slot_utc::DATE, 'no successful forecast run for the Sunday slot ' || last_sunday_slot_utc || ' UTC')
@@ -734,3 +738,11 @@ EXCEPTION WHEN OTHER THEN
     RAISE;
 END;
 $$;
+
+------------------------------------------------------------------------------
+-- Ownership (added 2026-11-21). The ops tasks run as GROCERY_OPS_ROLE; anything this script
+-- (re)creates as ACCOUNTADMIN is invisible to them until ownership moves. Missing this step
+-- made every scheduled ops task fail with "Unknown user-defined function" from Nov 15 to 21.
+------------------------------------------------------------------------------
+GRANT OWNERSHIP ON ALL VIEWS IN SCHEMA GROCERYDBTPROJECT.GROCERY_OPS TO ROLE GROCERY_OPS_ROLE COPY CURRENT GRANTS;
+GRANT OWNERSHIP ON ALL PROCEDURES IN SCHEMA GROCERYDBTPROJECT.GROCERY_OPS TO ROLE GROCERY_OPS_ROLE COPY CURRENT GRANTS;
