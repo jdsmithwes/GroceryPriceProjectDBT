@@ -12,6 +12,11 @@
 -- Basket: the same formula over the weekly basket totals (V_BASKET_STATUS).
 -- Good time = rank >= the watch's GOOD_PCT (default 75, dbt var
 -- basket_good_pct) with at least 6 weeks of history.
+-- Partial ranking (2026-11-27): the basket is ranked on the items that have
+-- a rank of their own (6+ observed weeks, i.e. CHEAPER_THAN_PCT not null);
+-- items new in the data (seasonal turkey, holiday candy) are left out and
+-- named, so one new item no longer blocks the whole basket. Low/typical/high
+-- and the rank all use that same subset; FULL_TOTAL is the whole basket.
 --
 -- Look-alike ("similar") = same retailer, same PRODUCT_TYPE (Cortex label),
 -- same UNIT_BASIS, unit price parsed with high confidence, at least 10%
@@ -78,12 +83,16 @@ CREATE HYBRID TABLE IF NOT EXISTS GROCERYDBTPROJECT.GROCERY_APP.BASKET_ALERT (
 -- 2. Views (set-based; procedures filter by shopper/watch)
 ------------------------------------------------------------------------------
 -- Items of every active watch that resolved to a product.
+-- IS_RANKED: the item has its own rank (6+ observed weeks), so it counts
+-- toward the basket's rank.
 CREATE OR REPLACE VIEW GROCERYDBTPROJECT.GROCERY_APP.V_BASKET_WATCH_ITEM AS
 SELECT w.WATCH_ID, w.SHOPPER_ID, w.LIST_ID, l.LIST_NAME, w.GOOD_PCT, w.INCLUDE_SIMILAR, w.EMAIL,
-       i.POSITION, i.ITEM_TEXT, i.PRODUCT_KEY
+       i.POSITION, i.ITEM_TEXT, i.PRODUCT_KEY,
+       COALESCE(b.CHEAPER_THAN_PCT IS NOT NULL, FALSE) AS IS_RANKED
 FROM GROCERYDBTPROJECT.GROCERY_APP.BASKET_WATCH w
 JOIN GROCERYDBTPROJECT.GROCERY_APP.SHOPPING_LIST l ON l.LIST_ID = w.LIST_ID
 JOIN GROCERYDBTPROJECT.GROCERY_APP.SHOPPING_LIST_ITEM i ON i.LIST_ID = w.LIST_ID
+LEFT JOIN GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_BUY_RECOMMENDATION b ON b.PRODUCT_KEY = i.PRODUCT_KEY
 WHERE w.IS_ACTIVE AND i.PRODUCT_KEY IS NOT NULL AND i.PRODUCT_KEY <> '';
 
 -- Weekly basket total over the trailing 12 weeks. Each item's weekly price
@@ -97,7 +106,7 @@ WITH weeks AS (
     WHERE PRICE_WEEK > DATEADD('week', -12, (SELECT MAX(PRICE_WEEK) FROM GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_PRODUCT_PRICE_WEEKLY_SERIES))
 ),
 filled AS (
-    SELECT i.WATCH_ID, i.SHOPPER_ID, i.LIST_NAME, i.GOOD_PCT, i.POSITION, wk.PRICE_WEEK, s.EFFECTIVE_PRICE AS OBSERVED_PRICE,
+    SELECT i.WATCH_ID, i.SHOPPER_ID, i.LIST_NAME, i.GOOD_PCT, i.POSITION, i.IS_RANKED, wk.PRICE_WEEK, s.EFFECTIVE_PRICE AS OBSERVED_PRICE,
            LAST_VALUE(s.EFFECTIVE_PRICE) IGNORE NULLS OVER (
                PARTITION BY i.WATCH_ID, i.POSITION ORDER BY wk.PRICE_WEEK
                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS PRICE
@@ -106,10 +115,15 @@ filled AS (
     LEFT JOIN GROCERYDBTPROJECT.GROCERY_MARTS.DBT_FCT_PRODUCT_PRICE_WEEKLY_SERIES s
            ON s.PRODUCT_KEY = i.PRODUCT_KEY AND s.PRICE_WEEK = wk.PRICE_WEEK
 )
+-- BASKET_TOTAL / IS_COMPLETE: the ranked items (what the rank compares);
+-- FULL_TOTAL / IS_FULL_COMPLETE: every item.
 SELECT WATCH_ID, SHOPPER_ID, LIST_NAME, GOOD_PCT, PRICE_WEEK,
        COUNT(*) AS ITEMS, COUNT(PRICE) AS ITEMS_PRICED, COUNT(OBSERVED_PRICE) AS ITEMS_OBSERVED,
-       SUM(PRICE)::NUMBER(10,2) AS BASKET_TOTAL,
-       COUNT(PRICE) = COUNT(*) AS IS_COMPLETE
+       COUNT_IF(IS_RANKED) AS RANKED_ITEMS,
+       SUM(IFF(IS_RANKED, PRICE, NULL))::NUMBER(10,2) AS BASKET_TOTAL,
+       COUNT_IF(IS_RANKED) > 0 AND COUNT_IF(IS_RANKED AND PRICE IS NOT NULL) = COUNT_IF(IS_RANKED) AS IS_COMPLETE,
+       SUM(PRICE)::NUMBER(10,2) AS FULL_TOTAL,
+       COUNT(PRICE) = COUNT(*) AS IS_FULL_COMPLETE
 FROM filled
 GROUP BY WATCH_ID, SHOPPER_ID, LIST_NAME, GOOD_PCT, PRICE_WEEK;
 
@@ -121,8 +135,8 @@ WITH c AS (
 cur AS (
     SELECT * FROM c QUALIFY ROW_NUMBER() OVER (PARTITION BY WATCH_ID ORDER BY PRICE_WEEK DESC) = 1
 )
-SELECT cur.WATCH_ID, cur.SHOPPER_ID, cur.LIST_NAME, cur.GOOD_PCT, cur.ITEMS,
-       cur.PRICE_WEEK AS CURRENT_WEEK, cur.BASKET_TOTAL AS CURRENT_TOTAL,
+SELECT cur.WATCH_ID, cur.SHOPPER_ID, cur.LIST_NAME, cur.GOOD_PCT, cur.ITEMS, cur.RANKED_ITEMS,
+       cur.PRICE_WEEK AS CURRENT_WEEK, cur.BASKET_TOTAL AS CURRENT_TOTAL, cur.FULL_TOTAL,
        COUNT(*) AS WEEKS,
        MIN(c.BASKET_TOTAL) AS LOW_TOTAL,
        MEDIAN(c.BASKET_TOTAL)::NUMBER(10,2) AS MEDIAN_TOTAL,
@@ -130,11 +144,11 @@ SELECT cur.WATCH_ID, cur.SHOPPER_ID, cur.LIST_NAME, cur.GOOD_PCT, cur.ITEMS,
        IFF(COUNT(*) < 2, NULL, ROUND(100 * COUNT_IF(c.BASKET_TOTAL > cur.BASKET_TOTAL) / (COUNT(*) - 1)))::NUMBER(3,0) AS CHEAPER_THAN_PCT,
        COUNT(*) >= 6 AND ROUND(100 * COUNT_IF(c.BASKET_TOTAL > cur.BASKET_TOTAL) / NULLIF(COUNT(*) - 1, 0)) >= cur.GOOD_PCT AS IS_GOOD_TIME
 FROM cur JOIN c ON c.WATCH_ID = cur.WATCH_ID
-GROUP BY cur.WATCH_ID, cur.SHOPPER_ID, cur.LIST_NAME, cur.GOOD_PCT, cur.ITEMS, cur.PRICE_WEEK, cur.BASKET_TOTAL;
+GROUP BY cur.WATCH_ID, cur.SHOPPER_ID, cur.LIST_NAME, cur.GOOD_PCT, cur.ITEMS, cur.RANKED_ITEMS, cur.PRICE_WEEK, cur.BASKET_TOTAL, cur.FULL_TOTAL;
 
 -- Each basket item with its buy signal and rank.
 CREATE OR REPLACE VIEW GROCERYDBTPROJECT.GROCERY_APP.V_BASKET_ITEM_STATUS AS
-SELECT i.WATCH_ID, i.SHOPPER_ID, i.LIST_NAME, i.GOOD_PCT, i.POSITION, i.ITEM_TEXT, i.PRODUCT_KEY,
+SELECT i.WATCH_ID, i.SHOPPER_ID, i.LIST_NAME, i.GOOD_PCT, i.POSITION, i.ITEM_TEXT, i.PRODUCT_KEY, i.IS_RANKED,
        p.PRODUCT_NAME, p.BRAND, p.SIZE_TEXT, b.RETAILER, b.CURRENT_WEEK, b.IS_CURRENTLY_LISTED,
        b.CURRENT_PRICE, b.UNIT_PRICE, b.UNIT_BASIS, b.WEEKS_OBSERVED, b.CHEAPER_THAN_PCT,
        b.HISTORY_LOW_PRICE, b.HISTORY_MEDIAN_PRICE, b.RECOMMENDATION, b.IS_STOCK_UP_CANDIDATE,
@@ -226,9 +240,10 @@ BEGIN
         'list_name', :LIST_NAME, 'tracked', TRUE,
         'basket', (SELECT OBJECT_CONSTRUCT('current_week', CURRENT_WEEK, 'current_total', CURRENT_TOTAL, 'weeks', WEEKS,
                                            'low_total', LOW_TOTAL, 'median_total', MEDIAN_TOTAL, 'high_total', HIGH_TOTAL,
-                                           'cheaper_than_pct', CHEAPER_THAN_PCT, 'good_pct', GOOD_PCT, 'is_good_time', IS_GOOD_TIME, 'items', ITEMS)
+                                           'cheaper_than_pct', CHEAPER_THAN_PCT, 'good_pct', GOOD_PCT, 'is_good_time', IS_GOOD_TIME, 'items', ITEMS,
+                                           'ranked_items', RANKED_ITEMS, 'full_total', FULL_TOTAL)
                    FROM GROCERYDBTPROJECT.GROCERY_APP.V_BASKET_STATUS WHERE WATCH_ID = :wid),
-        'trend', (SELECT ARRAY_AGG(OBJECT_CONSTRUCT('week', PRICE_WEEK, 'total', BASKET_TOTAL, 'complete', IS_COMPLETE,
+        'trend', (SELECT ARRAY_AGG(OBJECT_CONSTRUCT('week', PRICE_WEEK, 'total', BASKET_TOTAL, 'complete', IS_COMPLETE, 'full_total', FULL_TOTAL, 'ranked_items', RANKED_ITEMS,
                                                     'items_priced', ITEMS_PRICED, 'items_observed', ITEMS_OBSERVED)) WITHIN GROUP (ORDER BY PRICE_WEEK)
                   FROM GROCERYDBTPROJECT.GROCERY_APP.V_BASKET_WEEKLY WHERE WATCH_ID = :wid),
         'items', (SELECT ARRAY_AGG(OBJECT_CONSTRUCT('position', POSITION, 'item', ITEM_TEXT, 'product_key', PRODUCT_KEY, 'product', PRODUCT_NAME,
@@ -236,7 +251,7 @@ BEGIN
                                                     'unit_price', UNIT_PRICE, 'unit_basis', UNIT_BASIS, 'weeks', WEEKS_OBSERVED,
                                                     'cheaper_than_pct', CHEAPER_THAN_PCT, 'median_price', HISTORY_MEDIAN_PRICE,
                                                     'recommendation', RECOMMENDATION, 'stock_up', IS_STOCK_UP_CANDIDATE,
-                                                    'is_good_time', IS_GOOD_TIME, 'listed', IS_CURRENTLY_LISTED)) WITHIN GROUP (ORDER BY POSITION)
+                                                    'is_good_time', IS_GOOD_TIME, 'listed', IS_CURRENTLY_LISTED, 'ranked', IS_RANKED)) WITHIN GROUP (ORDER BY POSITION)
                   FROM GROCERYDBTPROJECT.GROCERY_APP.V_BASKET_ITEM_STATUS WHERE WATCH_ID = :wid),
         'similar', (SELECT ARRAY_AGG(OBJECT_CONSTRUCT('position', POSITION, 'for_item', ITEM_TEXT, 'similar_to_key', SIMILAR_TO_KEY,
                                                       'product_key', PRODUCT_KEY, 'product', PRODUCT_NAME, 'brand', BRAND, 'size', SIZE_TEXT,
@@ -325,8 +340,9 @@ BEGIN
     WITH cand AS (
         SELECT WATCH_ID, SHOPPER_ID, CURRENT_WEEK AS PRICE_WEEK, 'basket' AS KIND, '' AS PRODUCT_KEY, '' AS SIMILAR_TO_KEY,
                CURRENT_TOTAL AS PRICE, NULL::NUMBER(12,4) AS UNIT_PRICE, CHEAPER_THAN_PCT,
-               'Basket "' || LIST_NAME || '": $' || TRIM(TO_VARCHAR(CURRENT_TOTAL, '999,990.00')) || ' this week, cheaper than '
-               || CHEAPER_THAN_PCT || '% of the last ' || WEEKS || ' weeks (typical $' || TRIM(TO_VARCHAR(MEDIAN_TOTAL, '999,990.00')) || ').' AS DETAIL
+               'Basket "' || LIST_NAME || '": $' || TRIM(TO_VARCHAR(CURRENT_TOTAL, '999,990.00'))
+               || IFF(RANKED_ITEMS < ITEMS, ' for the ' || RANKED_ITEMS || ' of ' || ITEMS || ' items with enough history', ' this week')
+               || ', cheaper than ' || CHEAPER_THAN_PCT || '% of the last ' || WEEKS || ' weeks (typical $' || TRIM(TO_VARCHAR(MEDIAN_TOTAL, '999,990.00')) || ').' AS DETAIL
         FROM GROCERYDBTPROJECT.GROCERY_APP.V_BASKET_STATUS WHERE IS_GOOD_TIME
         UNION ALL
         SELECT WATCH_ID, SHOPPER_ID, CURRENT_WEEK, 'item', PRODUCT_KEY, '', CURRENT_PRICE, UNIT_PRICE, CHEAPER_THAN_PCT,

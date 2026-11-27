@@ -169,9 +169,10 @@ BEGIN
         'ok', TRUE, 'list_name', :LIST_NAME, 'tracked', TRUE,
         'basket', (SELECT OBJECT_CONSTRUCT('current_week', CURRENT_WEEK, 'current_total', CURRENT_TOTAL, 'weeks', WEEKS,
                                            'low_total', LOW_TOTAL, 'median_total', MEDIAN_TOTAL, 'high_total', HIGH_TOTAL,
-                                           'cheaper_than_pct', CHEAPER_THAN_PCT, 'good_pct', GOOD_PCT, 'is_good_time', IS_GOOD_TIME, 'items', ITEMS)
+                                           'cheaper_than_pct', CHEAPER_THAN_PCT, 'good_pct', GOOD_PCT, 'is_good_time', IS_GOOD_TIME, 'items', ITEMS,
+                                           'ranked_items', RANKED_ITEMS, 'full_total', FULL_TOTAL)
                    FROM GROCERYDBTPROJECT.GROCERY_APP.V_BASKET_STATUS WHERE WATCH_ID = :wid),
-        'trend', (SELECT ARRAY_AGG(OBJECT_CONSTRUCT('week', PRICE_WEEK, 'total', BASKET_TOTAL, 'complete', IS_COMPLETE,
+        'trend', (SELECT ARRAY_AGG(OBJECT_CONSTRUCT('week', PRICE_WEEK, 'total', BASKET_TOTAL, 'complete', IS_COMPLETE, 'full_total', FULL_TOTAL, 'ranked_items', RANKED_ITEMS,
                                                     'items_priced', ITEMS_PRICED, 'items_observed', ITEMS_OBSERVED)) WITHIN GROUP (ORDER BY PRICE_WEEK)
                   FROM GROCERYDBTPROJECT.GROCERY_APP.V_BASKET_WEEKLY WHERE WATCH_ID = :wid),
         'items', (SELECT ARRAY_AGG(OBJECT_CONSTRUCT('position', POSITION, 'item', ITEM_TEXT, 'product_key', PRODUCT_KEY, 'product', PRODUCT_NAME,
@@ -179,7 +180,7 @@ BEGIN
                                                     'unit_price', UNIT_PRICE, 'unit_basis', UNIT_BASIS, 'weeks', WEEKS_OBSERVED,
                                                     'cheaper_than_pct', CHEAPER_THAN_PCT, 'median_price', HISTORY_MEDIAN_PRICE,
                                                     'recommendation', RECOMMENDATION, 'stock_up', IS_STOCK_UP_CANDIDATE,
-                                                    'is_good_time', IS_GOOD_TIME, 'listed', IS_CURRENTLY_LISTED)) WITHIN GROUP (ORDER BY POSITION)
+                                                    'is_good_time', IS_GOOD_TIME, 'listed', IS_CURRENTLY_LISTED, 'ranked', IS_RANKED)) WITHIN GROUP (ORDER BY POSITION)
                   FROM GROCERYDBTPROJECT.GROCERY_APP.V_BASKET_ITEM_STATUS WHERE WATCH_ID = :wid),
         'similar', (SELECT ARRAY_AGG(OBJECT_CONSTRUCT('position', POSITION, 'for_item', ITEM_TEXT, 'similar_to_key', SIMILAR_TO_KEY,
                                                       'product_key', PRODUCT_KEY, 'product', PRODUCT_NAME, 'brand', BRAND, 'size', SIZE_TEXT,

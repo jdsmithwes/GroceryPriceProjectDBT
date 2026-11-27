@@ -990,7 +990,9 @@ with tab_basket:
                 b = stat.get("basket") or {}
                 pct, weeks = _num(b.get("cheaper_than_pct")), _num(b.get("weeks")) or 0
                 if b and pct is not None:
-                    headline = f"${b['current_total']:.2f} this week: cheaper than {pct:.0f}% of the last {weeks} weeks"
+                    ranked_n, all_n = b.get("ranked_items") or b.get("items"), b.get("items")
+                    scope = "this week" if ranked_n == all_n else f"for the {ranked_n} of {all_n} items with enough history"
+                    headline = f"${b['current_total']:.2f} {scope}: cheaper than {pct:.0f}% of the last {weeks} weeks"
                     if b.get("is_good_time"):
                         st.success(f"{headline}. Good time to buy.")
                     elif weeks < 6:
@@ -1001,6 +1003,10 @@ with tab_basket:
                     k1.metric("Low", f"${b['low_total']:.2f}")
                     k2.metric("Typical (median)", f"${b['median_total']:.2f}")
                     k3.metric("High", f"${b['high_total']:.2f}")
+                    if ranked_n != all_n:
+                        new_items = [it.get("item") for it in stat.get("items") or [] if not it.get("ranked")]
+                        st.caption(f"Not ranked yet, too new in the data (needs 6 weeks of prices): {', '.join(new_items)}. "
+                                   + (f"Whole basket this week: ${b['full_total']:.2f}." if b.get("full_total") is not None else ""))
                 else:
                     st.caption("No complete week of prices for this basket yet.")
                 trend = pd.DataFrame(stat.get("trend") or [])
@@ -1012,7 +1018,7 @@ with tab_basket:
                     if b.get("median_total") is not None:
                         trend["Typical (median)"] = b["median_total"]
                     st.line_chart(trend)
-                    st.caption("Weekly total of the tracked products (Kroger: median across stores; Walmart: national price). "
+                    st.caption("Weekly total of the ranked products (Kroger: median across stores; Walmart: national price). "
                                "An item's last price carries over a week it was not collected.")
                 irows = [{"item": it.get("item"), "product": it.get("product"), "retailer": str(it.get("retailer") or "").title(),
                           "price": _num(it.get("price")), "cheaper than % of weeks": _num(it.get("cheaper_than_pct")), "weeks": _num(it.get("weeks")),
