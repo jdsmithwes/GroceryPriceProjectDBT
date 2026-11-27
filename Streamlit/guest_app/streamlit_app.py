@@ -732,7 +732,7 @@ with tab_lookup:
 # ---------------------------------------------------------------- Basket
 with tab_basket:
     st.subheader("My basket")
-    st.write("Type items one per line, give a Georgia ZIP code, and price the basket at the nearest Kroger stores and at Walmart. (Saving lists and price watches are for signed-in shoppers; guests can price and compare.)")
+    st.write("Type items one per line, give a Georgia ZIP code, and price the basket at the nearest Kroger stores and at Walmart. Then track it: every Sunday you'll see whether this is a good week to buy it.")
     c1, c2 = st.columns([2, 1])
     zip_code = c1.text_input("ZIP code (Georgia)", value="30318", max_chars=5, disabled=not active)
     max_stores = c2.number_input("Nearest Kroger stores to price", 1, 81, 10, disabled=not active)
@@ -767,6 +767,123 @@ with tab_basket:
             show_df(pd.DataFrame(split["lines"]))
         if res.get("missing"):
             st.warning("Not priced: " + "; ".join(f"{m['item']} ({', '.join(v for k, v in m.items() if k != 'item' and v)})" for m in res["missing"]))
+
+        # ---- track this basket (Snowflake Scripts/Guest/03_guest_basket_watch.sql)
+        st.markdown("**Track this basket's price**")
+        track_ret = best.get("retailer") or "kroger"
+        track_other = "walmart" if track_ret == "kroger" else "kroger"
+        track_items = [{"item": m.get("item"), "product_key": (m.get(track_ret) or m.get(track_other) or {}).get("product_key")}
+                       for m in res.get("matches") or []]
+        n_keyed = sum(1 for t in track_items if t["product_key"])
+        t1, t2, t3 = st.columns([2, 1, 1])
+        track_name = t1.text_input("Basket name", key="track_name", placeholder="e.g. weekly", max_chars=60, disabled=not active)
+        good_pct = t2.slider("Good time = cheaper than this % of weeks", 60, 90, 75, step=5, disabled=not active)
+        incl_sim = t3.checkbox("Suggest look-alikes", value=True, disabled=not active)
+        st.caption(f"Tracks the {n_keyed} matched products. Checked every Sunday; next time you sign in you'll see whether the basket, "
+                   f"an item, or a look-alike that is cheaper per unit is cheaper than {good_pct}% of its last 12 weeks. Up to 3 baskets, 15 items each.")
+        if st.button("Track this basket", disabled=not (active and track_name and n_keyed)):
+            r = call_proc(f"{APP}.SP_GUEST_TRACK_BASKET", g["session_id"], track_name, json.dumps(track_items), int(good_pct), bool(incl_sim))
+            ok = record("basket_watch", f"track {track_name}", json.dumps(r)[:500])
+            if r.get("ok"):
+                st.session_state["watch_pick"] = r.get("list_name")
+                st.session_state.pop("basket_watches", None)
+                st.session_state.pop("basket_status", None)
+                st.success(f"Tracking '{r.get('list_name')}': {r.get('items_tracked')} of {r.get('items')} items, checked every Sunday.")
+            else:
+                msg = {"too_many_baskets": f"You can track up to {r.get('max_baskets')} baskets. Stop tracking one below first.",
+                       "too_many_items": f"A tracked basket can have up to {r.get('max_items')} items.",
+                       "guest_capacity": "Basket tracking for guests is full right now. Pricing still works.",
+                       "basket_watch_disabled": "Basket tracking is paused for guests right now."}.get(r.get("reason"), "Couldn't track this basket right now.")
+                st.warning(msg)
+            if ok is False:
+                st.rerun()
+
+    # ---- tracked baskets (loaded once per session; refreshed on changes, so reruns cost nothing)
+    if active:
+        st.divider()
+        st.subheader("Tracked baskets")
+        if "basket_watches" not in st.session_state:
+            lw = call_proc(f"{APP}.SP_GUEST_LIST_BASKET_WATCHES", g["session_id"]) or {}
+            st.session_state["basket_watches"] = lw.get("baskets") or []
+            record("basket_watch", "list", str(len(st.session_state["basket_watches"])))
+        watches = st.session_state["basket_watches"]
+        if not watches:
+            st.caption("No tracked baskets yet. Price a basket above, then use Track this basket.")
+        else:
+            def _num(v):  # NULLs arrive as None or NaN
+                return None if v is None or (isinstance(v, float) and pd.isna(v)) else v
+
+            names = [w["list_name"] for w in watches]
+            by_name = {w["list_name"]: w for w in watches}
+            pick_default = names.index(st.session_state["watch_pick"]) if st.session_state.get("watch_pick") in names else 0
+            wpick = st.selectbox("Basket", names, index=pick_default,
+                                 format_func=lambda n: n + (f"  ·  {by_name[n]['new_alerts']} new" if by_name[n].get("new_alerts") else ""))
+            cached = st.session_state.get("basket_status") or {}
+            if cached.get("list_name") != wpick:
+                cached = call_proc(f"{APP}.SP_GUEST_BASKET_STATUS", g["session_id"], wpick) or {}
+                st.session_state["basket_status"] = cached
+                if record("basket_watch", f"status {wpick}", json.dumps(cached.get("basket") or {})[:500]) is False:
+                    st.rerun()
+            stat = cached
+            if not stat.get("ok", True):
+                st.info("Basket tracking isn't available in this session.")
+            else:
+                alerts = stat.get("alerts") or []
+                if alerts:
+                    st.info("**Good time to buy**\n\n" + "\n".join(f"- {a['detail']}" for a in alerts))
+                    if st.button("Mark seen", key="ack_basket"):
+                        call_proc(f"{APP}.SP_GUEST_ACK_BASKET_ALERTS", g["session_id"], wpick)
+                        record("basket_watch", f"ack {wpick}")
+                        st.session_state.pop("basket_status", None)
+                        st.session_state.pop("basket_watches", None)
+                        st.rerun()
+                b = stat.get("basket") or {}
+                pct, weeks = _num(b.get("cheaper_than_pct")), _num(b.get("weeks")) or 0
+                if b and pct is not None:
+                    headline = f"${b['current_total']:.2f} this week: cheaper than {pct:.0f}% of the last {weeks} weeks"
+                    if b.get("is_good_time"):
+                        st.success(f"{headline}. Good time to buy.")
+                    elif weeks < 6:
+                        st.info(f"{headline}. Too little history to call it yet (needs 6 weeks).")
+                    else:
+                        st.info(f"{headline}. Typical week (good time = {b.get('good_pct')}% or more).")
+                    k1, k2, k3 = st.columns(3)
+                    k1.metric("Low", f"${b['low_total']:.2f}")
+                    k2.metric("Typical (median)", f"${b['median_total']:.2f}")
+                    k3.metric("High", f"${b['high_total']:.2f}")
+                else:
+                    st.caption("No complete week of prices for this basket yet.")
+                trend = pd.DataFrame(stat.get("trend") or [])
+                if not trend.empty and "complete" in trend:
+                    trend = trend[trend["complete"]]
+                if len(trend) > 1:
+                    trend["week"] = pd.to_datetime(trend["week"])
+                    trend = trend.set_index("week")[["total"]].rename(columns={"total": "Basket total"})
+                    if b.get("median_total") is not None:
+                        trend["Typical (median)"] = b["median_total"]
+                    st.line_chart(trend)
+                    st.caption("Weekly total of the tracked products (Kroger: median across stores; Walmart: national price). "
+                               "An item's last price carries over a week it was not collected.")
+                irows = [{"item": it.get("item"), "product": it.get("product"), "retailer": str(it.get("retailer") or "").title(),
+                          "price": _num(it.get("price")), "cheaper than % of weeks": _num(it.get("cheaper_than_pct")), "weeks": _num(it.get("weeks")),
+                          "signal": str(it.get("recommendation") or "").replace("_", " ").title(),
+                          "good time": "yes" if it.get("is_good_time") else "", "stock up": "yes" if it.get("stock_up") else ""}
+                         for it in stat.get("items") or []]
+                if irows:
+                    st.markdown("**Items**")
+                    show_df(pd.DataFrame(irows))
+                srows = [{"instead of": s_.get("for_item"), "look-alike": s_.get("product"), "size": s_.get("size"),
+                          "price": _num(s_.get("price")), "less per unit": f"{s_.get('unit_saving_pct')}% per {s_.get('unit_basis')}",
+                          "cheaper than % of weeks": _num(s_.get("cheaper_than_pct"))} for s_ in stat.get("similar") or []]
+                if srows:
+                    st.markdown("**Look-alike better buys** (same product type and retailer, cheaper per unit, at a good price now)")
+                    show_df(pd.DataFrame(srows))
+                if st.button("Stop tracking this basket", key="untrack_basket"):
+                    call_proc(f"{APP}.SP_GUEST_UNTRACK_BASKET", g["session_id"], wpick)
+                    record("basket_watch", f"untrack {wpick}")
+                    for k in ("watch_pick", "basket_status", "basket_watches"):
+                        st.session_state.pop(k, None)
+                    st.rerun()
 
 # ---------------------------------------------------------------- Deals
 with tab_deals:
