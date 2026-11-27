@@ -136,7 +136,7 @@ $$;
 
 CREATE OR REPLACE PROCEDURE GROCERYDBTPROJECT.GROCERY_APP.SP_GET_PROFILE()
 RETURNS VARIANT LANGUAGE SQL
-COMMENT = 'Everything the agent should remember about the shopper: preferences, shopping lists (names + item counts), active price watches, and unacknowledged price alerts. Call at the start of a conversation.'
+COMMENT = 'Everything the agent should remember about the shopper: preferences, shopping lists (names + item counts), active price watches, unacknowledged price alerts, and tracked baskets with this week''s rank. Call at the start of a conversation.'
 EXECUTE AS CALLER
 AS
 $$
@@ -158,7 +158,15 @@ BEGIN
             'new_alerts', (SELECT ARRAY_AGG(OBJECT_CONSTRUCT('alert_id', a.ALERT_ID, 'product_key', a.PRODUCT_KEY, 'product', p.PRODUCT_NAME, 'price', a.PRICE, 'store_id', a.STORE_ID, 'reason', a.REASON, 'price_week', a.PRICE_WEEK)) WITHIN GROUP (ORDER BY a.CREATED_AT DESC)
                            FROM GROCERYDBTPROJECT.GROCERY_APP.PRICE_ALERT a
                            LEFT JOIN GROCERYDBTPROJECT.GROCERY_MARTS.DBT_DIM_PRODUCT p ON p.PRODUCT_KEY = a.PRODUCT_KEY
-                           WHERE a.SHOPPER_ID = CURRENT_USER() AND NOT a.IS_ACKNOWLEDGED)
+                           WHERE a.SHOPPER_ID = CURRENT_USER() AND NOT a.IS_ACKNOWLEDGED),
+            -- tracked baskets (07_basket_watch.sql): rank this week + unseen alerts
+            'basket_watches', (SELECT ARRAY_AGG(OBJECT_CONSTRUCT('list_name', s.LIST_NAME, 'current_total', s.CURRENT_TOTAL,
+                                                                 'cheaper_than_pct', s.CHEAPER_THAN_PCT, 'is_good_time', s.IS_GOOD_TIME,
+                                                                 'new_alerts', COALESCE(ba.n, 0)))
+                               FROM GROCERYDBTPROJECT.GROCERY_APP.V_BASKET_STATUS s
+                               LEFT JOIN (SELECT WATCH_ID, COUNT(*) n FROM GROCERYDBTPROJECT.GROCERY_APP.BASKET_ALERT
+                                          WHERE SHOPPER_ID = CURRENT_USER() AND NOT IS_ACKNOWLEDGED GROUP BY 1) ba ON ba.WATCH_ID = s.WATCH_ID
+                               WHERE s.SHOPPER_ID = CURRENT_USER())
         )
     );
 END;

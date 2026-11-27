@@ -109,6 +109,7 @@ tools and used by the Streamlit app for saved lists and preferences:
 | `SHOPPER_PREFERENCE` | home ZIP, preferred stores, dietary flags, unit-price basis | agent tool `SP_SET_PREFERENCE` |
 | `SHOPPING_LIST` / `SHOPPING_LIST_ITEM` | named lists with resolved `PRODUCT_KEY`s; the basket tool reads a list by name | `SP_SAVE_LIST`, basket tool |
 | `PRICE_WATCH` | products to alert on (target price or "at historic low") | `SP_WATCH_PRODUCT`; the Sunday task evaluates and writes `PRICE_ALERT` |
+| `BASKET_WATCH` / `BASKET_ALERT` | tracked baskets (a list whose items carry the priced `PRODUCT_KEY`s) and their good-time-to-buy alerts for the basket, its items and look-alike swaps (`07_basket_watch.sql`) | `SP_TRACK_BASKET` (owner app); the Sunday task runs `SP_CHECK_BASKET_WATCHES`, which writes alerts and sends one email |
 | `AGENT_FEEDBACK` | thumbs up/down with the question, tool calls and answer | agent tool, Streamlit UI |
 | `AGENT_RUN_LOG` | one row per request: question, tools, latency, credits | eval runner, UI |
 
