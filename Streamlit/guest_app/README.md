@@ -16,6 +16,16 @@ service user `SVC_GUEST_APP` (role `GROCERY_GUEST_ROLE`, warehouse
 
 ## What a visitor sees
 
+0. **Sign in with LinkedIn** (when `[auth.linkedin]` is configured): one click
+   through LinkedIn's OpenID Connect via `st.login`. Authlib validates the ID
+   token; the app hands the claims to `SP_GUEST_OIDC_LOGIN`
+   (`Snowflake Scripts/Guest/04_guest_oidc.sql`), which finds the guest by
+   LinkedIn identity, links an existing guest with the same verified email,
+   or asks a new person for consent once (LinkedIn shares no profile URL, so
+   that field is optional there) and creates them already verified. The
+   identity cookie lasts 30 days, so a returning visitor skips sign-in;
+   sessions, caps and the meter are unchanged. Log out clears it. The
+   emailed code below stays as the fallback under "Or use your email instead".
 1. **Sign up** tab: first name, last name, email, LinkedIn profile URL, consent
    checkbox (what is stored and why). All four fields are required and
    validated; without consent nothing is stored. `SP_GUEST_REGISTER` creates
@@ -97,6 +107,26 @@ the hourly alert closes guest access when billed spend reaches 5.
    from_name         = "Grocery Value"
    app_url           = "https://grocerypriceprojectdbt-akbd8wqcnrfuhi4hhevyzr.streamlit.app"
    ```
+   Sign in with LinkedIn (optional; without it the app is email-only):
+
+   ```toml
+   [auth]
+   redirect_uri  = "https://grocerypriceprojectdbt-akbd8wqcnrfuhi4hhevyzr.streamlit.app/oauth2callback"
+   cookie_secret = "<random, 48+ characters>"
+
+   [auth.linkedin]
+   client_id           = "<LinkedIn app client ID>"
+   client_secret       = "<LinkedIn app primary client secret>"
+   server_metadata_url = "https://www.linkedin.com/oauth/.well-known/openid-configuration"
+   client_kwargs       = { token_endpoint_auth_method = "client_secret_post" }
+   ```
+   `client_secret_post` is required: LinkedIn's discovery document lists no
+   token auth methods, so Authlib would default to HTTP Basic and LinkedIn
+   answers "client_secret is missing". LinkedIn app: developer.linkedin.com →
+   Create app (needs a Company Page) → Products: "Sign In with LinkedIn using
+   OpenID Connect" → Auth: redirect URLs for the app (above) and
+   `http://localhost:8501/oauth2callback` for local tests.
+
    Gmail app password: Google account → Security → 2-Step Verification on →
    App passwords → create one named "Grocery Value". Gmail allows ~500 sends a
    day; the app caps codes at 200 a day. Without the `[email]` section the app
