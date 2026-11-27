@@ -34,8 +34,15 @@ service user `SVC_GUEST_APP` (role `GROCERY_GUEST_ROLE`, warehouse
    `SP_GUEST_RECORD`, which logs the interaction (input, output head, tokens,
    model, warehouse seconds, estimated credits) and returns the new status.
    The app disables inputs and shows the banner the moment a limit is hit.
-5. Guests cannot save lists or set price watches (that state would belong to
-   the shared service user); they can price baskets and compare.
+5. **Basket watch**: after pricing a basket a guest can track it (up to 3
+   baskets, 15 items each). Every Sunday the owner's weekly task ranks each
+   basket, its items and look-alike swaps ("cheaper than X% of the last 12
+   weeks"); the guest sees the result and any alerts on their next visit.
+   Guests are never emailed alerts. It runs through session-scoped procedures
+   (`Snowflake Scripts/Guest/03_guest_basket_watch.sql`) keyed on
+   `guest:<GUEST_ID>`, never on the shared service user, and each call is
+   metered as kind `basket_watch`. Free-form saved lists and single-item price
+   watches stay owner-only.
 6. Deals & trends lists genuine deals **one row per product** (25 products,
    not 25 store rows) with a pull-down of the stores on deal; the same query
    runs in the Snowflake app.
@@ -117,7 +124,8 @@ component and costs nothing.
 - Who signed up, what they asked: `GUEST_USER`, `GUEST_SESSION`, `GUEST_INTERACTION`;
   the week's totals: `GROCERY_APP.V_GUEST_WEEK`.
 - Change limits: `UPDATE GROCERY_APP.GUEST_SETTING SET VALUE = … WHERE KEY = …`
-  (session cap, weekly cap, minutes, rates). The resource monitor's quota is
+  (session cap, weekly cap, minutes, rates; `basket_watch_enabled`,
+  `basket_watch_max_baskets`, `basket_watch_max_items`, `basket_watch_max_total`). The resource monitor's quota is
   separate: `ALTER RESOURCE MONITOR GROCERY_GUEST_MONITOR SET CREDIT_QUOTA = …`.
 - Rotate the key: new pair → `ALTER USER SVC_GUEST_APP SET RSA_PUBLIC_KEY_2 = …`,
   update the Streamlit secret, then unset the old key.
@@ -127,4 +135,6 @@ component and costs nothing.
 Stored: name, email, LinkedIn URL, consent time, and the visitor's questions
 and clicks with the answers' first 4,000 characters, in the owner's Snowflake
 account. Not shared or sold. Delete a guest: `DELETE FROM GUEST_INTERACTION /
-GUEST_SESSION / GUEST_USER WHERE GUEST_ID = …`.
+GUEST_SESSION / GUEST_USER WHERE GUEST_ID = …`, and their tracked baskets:
+`BASKET_ALERT` / `BASKET_WATCH` / `SHOPPING_LIST` (and its `SHOPPING_LIST_ITEM`
+rows) `WHERE SHOPPER_ID = 'guest:' || GUEST_ID`.

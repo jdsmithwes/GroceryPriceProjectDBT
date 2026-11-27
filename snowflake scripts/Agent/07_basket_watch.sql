@@ -26,7 +26,8 @@
 -- new alert to the ops alert_email setting (GROCERY_OPS.OPS_SETTING; the
 -- owner app has one shopper, the owner). The address is never in this file.
 --
--- Owner app only (decision 2026-11-27); the public guest app is unchanged.
+-- Guests: Snowflake Scripts/Guest/03_guest_basket_watch.sql (session-scoped
+-- procedures, SHOPPER_ID 'guest:<id>', in-app alerts only, never emailed).
 --
 -- Run as ACCOUNTADMIN after 06. Sandbox variant (same as 06):
 --   sed -E 's/GROCERY_(APP|SEMANTIC|MARTS|ML|RAW)([^_A-Za-z0-9]|$)/GROCERY_DEV_\1\2/g; s/GROCERY_AGENT_WH/COMPUTE_WH/g; /^-- PROD ONLY/,$d'
@@ -356,7 +357,8 @@ BEGIN
     FROM GROCERYDBTPROJECT.GROCERY_APP.BASKET_ALERT a
     JOIN GROCERYDBTPROJECT.GROCERY_APP.BASKET_WATCH w ON w.WATCH_ID = a.WATCH_ID
     JOIN GROCERYDBTPROJECT.GROCERY_APP.SHOPPING_LIST l ON l.LIST_ID = w.LIST_ID
-    WHERE a.EMAILED_AT IS NULL AND NOT a.IS_ACKNOWLEDGED AND w.EMAIL AND w.IS_ACTIVE AND a.CREATED_AT <= :marker;
+    WHERE a.EMAILED_AT IS NULL AND NOT a.IS_ACKNOWLEDGED AND w.EMAIL AND w.IS_ACTIVE AND a.CREATED_AT <= :marker
+      AND w.SHOPPER_ID NOT LIKE 'guest:%';   -- guests see alerts in the app only (Guest/03_guest_basket_watch.sql)
 
     IF (n_mailed > 0) THEN
         SELECT MAX(IFF(KEY = 'alert_email', VALUE, NULL)), MAX(IFF(KEY = 'email_integration', VALUE, NULL))
@@ -373,7 +375,7 @@ BEGIN
         IF (sent) THEN
             UPDATE GROCERYDBTPROJECT.GROCERY_APP.BASKET_ALERT a SET EMAILED_AT = CURRENT_TIMESTAMP()
             WHERE a.EMAILED_AT IS NULL AND NOT a.IS_ACKNOWLEDGED AND a.CREATED_AT <= :marker
-              AND a.WATCH_ID IN (SELECT WATCH_ID FROM GROCERYDBTPROJECT.GROCERY_APP.BASKET_WATCH WHERE EMAIL AND IS_ACTIVE);
+              AND a.WATCH_ID IN (SELECT WATCH_ID FROM GROCERYDBTPROJECT.GROCERY_APP.BASKET_WATCH WHERE EMAIL AND IS_ACTIVE AND SHOPPER_ID NOT LIKE 'guest:%');
         END IF;
     END IF;
     RETURN OBJECT_CONSTRUCT('alerts_raised', n_raised, 'alerts_emailed', IFF(sent, n_mailed, 0), 'email_sent', sent, 'checked_at', CURRENT_TIMESTAMP());
