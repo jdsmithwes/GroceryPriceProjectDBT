@@ -147,3 +147,51 @@ weekly, raising Price Alerts when the lowest current price is at or below the
 target or at a historic low), and Feedback on answers (1–5). This state lives
 in hybrid tables in `GROCERY_APP` and is read and written only through the
 agent's tools; the price marts remain read-only for the agent.
+
+## Additions 2026-11-27 — healthy week basket
+
+**Food group / TFP category** — the USDA Thrifty Food Plan (2021) market-basket
+group and subcategory of a Kroger food product (vegetables: dark-green, red and
+orange, legumes, starchy, other; fruits: whole, 100% juice; grains: whole-grain
+staple, whole-grain cereal, refined staple, other; dairy: low-fat, higher-fat,
+cheese; protein: meats, poultry, eggs, seafood, nuts/seeds/soy; "other" for the
+plan's miscellaneous categories, snacks and unmapped items). Assigned by the
+first matching regex rule of the `diet_category_map` seed over `PRODUCT_TYPE`.
+Lives on `dim_product_diet`.
+
+**Whole food** — a plain product that is judged healthy without nutrition facts:
+raw or plain frozen produce (the FDA "healthy" rule qualifies them outright),
+shell eggs, plain raw cuts of meat, poultry and fish, plain dry grains, plain
+nuts and tofu. Anything canned, dried, seasoned, breaded, smoked, cured or
+sauced is judged by its facts.
+
+**Healthy status** — `whole_food` | `meets_limits` | `fails` | `no_facts`. The
+limits are the FDA "healthy" claim's per-serving caps (sodium 230 mg for every
+group; added sugar 1 g, 2.5 g dairy, 5 g grains; saturated fat 1 g, 2 g dairy,
+eggs, meat and poultry), held in the `diet_guideline` seed. Kroger's feed omits
+zero-valued nutrients, so a missing line on a label that has facts is read as 0.
+The claim's whole-grain / food-group-equivalent test is not applied.
+
+**Diet status (with provenance)** — per product: `VEGAN_STATUS` (declared |
+whole_food_plant | no_animal_ingredients_found | excluded | unknown),
+`VEGETARIAN_STATUS`, `KOSHER_HALAL_STATUS` (declared_kosher |
+inherently_kosher_whole_food | excluded | unknown). Evidence = manufacturer
+declarations, allergen "Contains" flags and word-boundary regexes over the
+ingredient statement. A meat, poultry or fish product is excluded for vegan and
+vegetarian whatever its declaration says. Kosher and halal are one option
+(owner decision): kosher-declared items plus plain whole foods; pork,
+shellfish, alcohol, fish without scales and any meat or poultry not declared
+kosher are excluded; halal shoppers are told to confirm meat and poultry.
+Nothing is labelled "halal-certified" (61 declarations in the catalog).
+
+**Healthy week basket** — `SP_SUGGEST_WEEKLY_BASKET(BUDGET, DIET, ZIP, PROFILE,
+MAX_ITEMS)`: the budget is split by TFP cost share per subcategory (profile
+`adult` = mean of the male and female 20-50 tables; the miscellaneous ~8% is
+left unallocated and reported); a subcategory with no eligible item passes its
+dollars to the diet's alternatives; the best **value** item wins a category
+(0.5 x Cheaper-than % + 0.3 x price per pound within the category + 0.2 x
+Kroger nutritional rating); pass 1 one item per category, pass 2 a second item
+where under target, pass 3 quantities until the budget or targets are met. The
+narrative is written by Claude Haiku from the numbered picks only, and every
+line must carry a valid `[n]` tag. Saved as a Basket watch, so the Sunday check
+and alerts apply. General USDA/FDA guidance, not nutrition advice.

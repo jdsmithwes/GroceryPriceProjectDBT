@@ -57,6 +57,32 @@ service user `SVC_GUEST_APP` (role `GROCERY_GUEST_ROLE`, warehouse
    not 25 store rows) with a pull-down of the stores on deal; the same query
    runs in the Snowflake app.
 
+## Plan my week (healthy basket for a budget and diet)
+
+In **My basket**, "Plan my week" takes a weekly budget ($20-300 for guests), a
+diet (none, vegetarian, vegan, kosher / halal-friendly) and a Georgia ZIP, and
+proposes up to 15 items (with quantities) from the nearest Kroger:
+
+- the budget is split across food groups the way the USDA Thrifty Food Plan
+  2021 does (the plan's "miscellaneous" share is left for the shopper);
+- every item either is a plain whole food or meets the FDA "healthy" claim's
+  per-serving limits on sodium, added sugar and saturated fat;
+- the diet is applied from manufacturer declarations, allergen flags and the
+  ingredient list, and every pick shows where its label came from;
+- within a category the best value wins, using the same "cheaper than X% of
+  the last 12 weeks" rank as the basket watch;
+- Claude Haiku writes 8-12 lines of meal-prep notes from the numbered picks
+  only (a line without a valid item tag is dropped before it is shown).
+
+"Track this basket" saves the result as an ordinary tracked basket, so the
+Sunday check and the alerts apply. One suggestion is one metered interaction
+(kind `suggestion`, the narrative's tokens). Kroger only: Walmart's catalog has
+no diet or nutrition data. The page states that this is general USDA/FDA
+guidance, not nutrition advice, and that halal shoppers should confirm meat and
+poultry themselves (no raw meat or poultry in the catalog is declared kosher).
+Owner switches: `GUEST_SETTING` rows `healthy_week_enabled` and
+`healthy_week_max_budget`.
+
 ## How credits are estimated
 
 `SP_GUEST_RECORD`: `tokens × rate_credits_per_m_tokens / 1e6` (or

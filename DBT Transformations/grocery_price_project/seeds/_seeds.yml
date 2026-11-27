@@ -88,3 +88,98 @@ seeds:
       - name: TIER
         description: "Private-label tier: value, core, premium, natural, organic, bakery, fresh, meal_kit, baby, pet, household, health."
         data_tests: [not_null]
+
+  - name: diet_guideline
+    description: >
+      Every number the healthy-week basket relies on, with its source
+      (plan: healthy-week-basket, 2026-11-27). USDA Thrifty Food Plan 2021
+      market-basket cost shares and weekly pounds per food group and
+      subcategory for adult males and females 20–50 (tables A4.10/A4.11);
+      the Dietary Guidelines for Americans 2025–2030 daily pattern; the FDA
+      "healthy" claim's per-serving limits on sodium, added sugars and
+      saturated fat by food group (nutrient limits only — the rule's
+      food-group-equivalent test is not applied); and the vegan, kosher and
+      halal definitions as rule text. SP_SUGGEST_WEEKLY_BASKET reads the TFP
+      rows to split a budget; dim_product_diet reads the FDA rows; both apps
+      show the sources. Change a number here, not in code.
+    config:
+      column_types:
+        SOURCE_KEY: varchar
+        RULE_KEY: varchar
+        PROFILE: varchar
+        FOOD_GROUP: varchar
+        TFP_CATEGORY: varchar
+        METRIC: varchar
+        VALUE: number(12,4)
+        UNIT: varchar
+        NOTE: varchar
+        SOURCE_NAME: varchar
+        URL: varchar
+        AS_OF: date
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [SOURCE_KEY, RULE_KEY, PROFILE, FOOD_GROUP, TFP_CATEGORY, METRIC]
+    columns:
+      - name: SOURCE_KEY
+        description: "tfp2021, dga2025, fda_healthy_2024, vegan_society, ou_kosher, yale_halal."
+        data_tests:
+          - not_null
+      - name: PROFILE
+        description: "adult_male / adult_female (TFP tables) or all. The app's default profile 'adult' averages the two TFP profiles."
+        data_tests:
+          - not_null
+      - name: METRIC
+        description: "cost_share_pct_of_total, lbs_per_week, *_max_*_per_serving, servings_per_day, or rule (text only)."
+        data_tests:
+          - not_null
+      - name: URL
+        description: "Where the figure was read; shown in the apps as the source list."
+        data_tests:
+          - not_null
+
+  - name: diet_category_map
+    description: >
+      Ordered regex rules that place a Kroger food product into a Thrifty
+      Food Plan market-basket category from its Cortex PRODUCT_TYPE label
+      (dim_product). dim_product_diet applies them case-insensitively in
+      PRIORITY order and the first match wins: exclusions first (candy,
+      desserts, soft drinks, snacks, condiments, fats, prepared entrees —
+      the TFP "miscellaneous" categories that are never a healthy-week
+      pick), then dairy, protein, vegetables, grains and finally fruit, so
+      that a fruit word used as a flavour (strawberry yogurt, banana bread)
+      lands with the food it flavours. IS_WHOLE_FOOD marks rules whose
+      plain fresh/frozen products need no nutrition facts (raw produce);
+      dim_product_diet narrows it further. Unmatched food products are
+      FOOD_GROUP 'other' / TFP_CATEGORY 'unmapped'. 2,762 distinct product
+      types (2026-11-27) make a per-type map impractical; tune patterns
+      here and rebuild.
+    config:
+      column_types:
+        PRIORITY: number(5,0)
+        FOOD_GROUP: varchar
+        TFP_CATEGORY: varchar
+        PATTERN: varchar
+        IS_WHOLE_FOOD: boolean
+        NOTE: varchar
+    columns:
+      - name: PRIORITY
+        description: "Evaluation order; lowest matching rule wins."
+        data_tests:
+          - not_null
+          - unique
+      - name: FOOD_GROUP
+        description: "vegetables, fruits, grains, dairy, protein, or other (never picked)."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['vegetables', 'fruits', 'grains', 'dairy', 'protein', 'other']
+      - name: TFP_CATEGORY
+        description: "TFP market-basket subcategory key, matching diet_guideline.TFP_CATEGORY (veg_dark_green, fruit_whole, grain_whole_staple, dairy_lowfat, protein_poultry, misc_prepared, ...)."
+        data_tests:
+          - not_null
+      - name: PATTERN
+        description: "Snowflake regex (POSIX ERE with \\b), applied to PRODUCT_TYPE with REGEXP_COUNT(..., 'i') > 0."
+        data_tests:
+          - not_null

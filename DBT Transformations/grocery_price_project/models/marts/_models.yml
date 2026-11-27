@@ -504,3 +504,149 @@ models:
         description: "Week the index equals 100."
       - name: IS_FOOD_CATEGORY
         description: "TRUE for food and drink categories; filter on it for food-price trends."
+
+  - name: dim_product_diet
+    description: >
+      Healthy-week basket (2026-11-27): one row per Kroger food product with
+      its USDA Thrifty Food Plan food group and subcategory (from the
+      diet_category_map seed, first matching rule by PRIORITY on the Cortex
+      PRODUCT_TYPE), whether it is a plain whole food, an FDA-"healthy"
+      nutrient-limit status, and vegan / vegetarian / kosher-halal statuses
+      that each carry their provenance. Kroger only: Walmart's catalog has
+      no declarations, allergens, ingredients or nutrition facts. Statuses
+      come from manufacturer-supplied data and regexes over ingredient text,
+      so the apps show the provenance label next to every pick and never
+      claim certification. SP_SUGGEST_WEEKLY_BASKET picks only rows whose
+      FOOD_GROUP is a real group, HEALTHY_STATUS is whole_food or
+      meets_limits, and the chosen diet status is allowed.
+    columns:
+      - name: PRODUCT_KEY
+        description: "kroger:PRODUCT_ID (dim_product)."
+        data_tests: [not_null, unique]
+      - name: FOOD_GROUP
+        description: "vegetables, fruits, grains, dairy, protein, or other (TFP miscellaneous, snacks and unmapped: never picked)."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['vegetables', 'fruits', 'grains', 'dairy', 'protein', 'other']
+      - name: TFP_CATEGORY
+        description: "Thrifty Food Plan market-basket subcategory (veg_dark_green, veg_red_orange, veg_legumes, veg_starchy, veg_other, fruit_whole, fruit_juice, grain_whole_staple, grain_whole_cereal, grain_refined_staple, grain_refined_other, dairy_lowfat, dairy_higherfat, dairy_cheese, protein_meat, protein_poultry, protein_egg, protein_seafood, protein_nuts_seeds_soy, misc_*, unmapped)."
+        data_tests:
+          - not_null
+      - name: IS_WHOLE_FOOD
+        description: "Plain food judged healthy without nutrition facts: raw or plain frozen produce, shell eggs, plain raw cuts of meat, poultry and fish, plain dry grains, plain nuts and tofu."
+      - name: HEALTHY_STATUS
+        description: "whole_food | meets_limits (FDA 'healthy' per-serving limits on sodium, added sugar and saturated fat for its food group) | fails | no_facts. The FDA food-group-equivalent test is not applied."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['whole_food', 'meets_limits', 'fails', 'no_facts']
+      - name: HEALTHY_FAIL_REASON
+        description: "Which limits a 'fails' row exceeds, e.g. 'sodium 480 mg; added sugar 12 g'."
+      - name: VEGAN_STATUS
+        description: "declared (manufacturer) | whole_food_plant | no_animal_ingredients_found (ingredient text read, nothing found) | excluded (allergen flag, animal ingredient incl. honey/gelatin, or animal food group) | unknown. Allowed for a vegan basket: the first three."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['declared', 'whole_food_plant', 'no_animal_ingredients_found', 'excluded', 'unknown']
+      - name: VEGETARIAN_STATUS
+        description: "declared | whole_food | no_meat_ingredients_found | excluded (fish, meat, gelatin) | unknown."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['declared', 'whole_food', 'no_meat_ingredients_found', 'excluded', 'unknown']
+      - name: KOSHER_HALAL_STATUS
+        description: "declared_kosher (certification symbol declared) | inherently_kosher_whole_food (raw produce, plain grains, eggs, plain nuts, scaled fish) | excluded (pork, shellfish, alcohol, fish without scales, meat or poultry not declared kosher) | unknown. One option for both diets; halal shoppers must confirm meat and poultry themselves and the apps say so."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['declared_kosher', 'inherently_kosher_whole_food', 'excluded', 'unknown']
+      - name: DECL_HALAL
+        description: "Manufacturer declared Halal (61 products in the catalog). Shown as 'declared halal by the maker', never as certified."
+      - name: EST_LBS
+        description: "Estimated as-purchased pounds per package from the high-confidence parsed size (oz/16, fl oz/16, eggs 0.125 lb each); NULL otherwise."
+      - name: SODIUM_MAX_MG
+        description: "The FDA sodium limit applied to this product's group (diet_guideline seed)."
+      - name: DATA_AS_OF
+        description: "Collection time of the snapshot the evidence came from."
+
+unit_tests:
+  - name: test_dim_product_diet_statuses
+    description: >
+      Healthy-week basket rules on hand-made rows: the food-group map in
+      PRIORITY order (chocolate milk is dairy, not candy), whole-food
+      detection, the zero-omitted-nutrient policy (a label with sodium but no
+      added-sugar or saturated-fat line meets the limits), a saturated-fat
+      failure with its reason, and the diet statuses including the data-error
+      case of a chicken breast declared Vegan.
+    model: dim_product_diet
+    given:
+      - input: ref('dim_product')
+        rows:
+          - {PRODUCT_KEY: 'kroger:1', RETAILER: kroger, PRODUCT_ID: '1', PRODUCT_NAME: 'Fresh Strawberries - 1 LB Clamshell', PRIMARY_COMMON_CATEGORY: Produce, TEMPERATURE: Refrigerated, IS_FOOD: true, PRODUCT_TYPE: 'fresh strawberries', PACKAGE_QUANTITY: 16, UNIT_BASIS: oz, PARSE_CONFIDENCE: high}
+          - {PRODUCT_KEY: 'kroger:2', RETAILER: kroger, PRODUCT_ID: '2', PRODUCT_NAME: 'Kroger Boneless Skinless Chicken Breast', PRIMARY_COMMON_CATEGORY: 'Meat & Seafood', TEMPERATURE: Refrigerated, IS_FOOD: true, PRODUCT_TYPE: 'chicken breast', PARSE_CONFIDENCE: none}
+          - {PRODUCT_KEY: 'kroger:3', RETAILER: kroger, PRODUCT_ID: '3', PRODUCT_NAME: 'Fage Total Plain 0% Greek Yogurt', PRIMARY_COMMON_CATEGORY: Dairy, TEMPERATURE: Refrigerated, IS_FOOD: true, PRODUCT_TYPE: 'greek yogurt', PARSE_CONFIDENCE: none}
+          - {PRODUCT_KEY: 'kroger:4', RETAILER: kroger, PRODUCT_ID: '4', PRODUCT_NAME: 'Kroger Whole Milk Gallon', PRIMARY_COMMON_CATEGORY: Dairy, TEMPERATURE: Refrigerated, IS_FOOD: true, PRODUCT_TYPE: 'whole milk', PARSE_CONFIDENCE: none}
+          - {PRODUCT_KEY: 'kroger:5', RETAILER: kroger, PRODUCT_ID: '5', PRODUCT_NAME: 'Honey Roasted Peanut Butter', PRIMARY_COMMON_CATEGORY: 'Condiment & Sauces', TEMPERATURE: Ambient, IS_FOOD: true, PRODUCT_TYPE: 'peanut butter', PARSE_CONFIDENCE: none}
+          - {PRODUCT_KEY: 'kroger:6', RETAILER: kroger, PRODUCT_ID: '6', PRODUCT_NAME: 'Kroger Bone-In Pork Loin Chops', PRIMARY_COMMON_CATEGORY: 'Meat & Seafood', TEMPERATURE: Refrigerated, IS_FOOD: true, PRODUCT_TYPE: 'pork loin chops', PARSE_CONFIDENCE: none}
+          - {PRODUCT_KEY: 'kroger:7', RETAILER: kroger, PRODUCT_ID: '7', PRODUCT_NAME: 'Kroger Lowfat Chocolate Milk', PRIMARY_COMMON_CATEGORY: Dairy, TEMPERATURE: Refrigerated, IS_FOOD: true, PRODUCT_TYPE: 'chocolate milk', PARSE_CONFIDENCE: none}
+          - {PRODUCT_KEY: 'kroger:8', RETAILER: kroger, PRODUCT_ID: '8', PRODUCT_NAME: 'Birds Eye Broccoli Florets', PRIMARY_COMMON_CATEGORY: Frozen, TEMPERATURE: Frozen, IS_FOOD: true, PRODUCT_TYPE: 'frozen broccoli florets', PARSE_CONFIDENCE: none}
+          - {PRODUCT_KEY: 'walmart:9', RETAILER: walmart, PRODUCT_ID: '9', PRODUCT_NAME: 'Great Value Apples', PRIMARY_COMMON_CATEGORY: Produce, IS_FOOD: true, PRODUCT_TYPE: 'apples', PARSE_CONFIDENCE: none}
+      # a slice of the two seeds (dbt Fusion requires seeds to be mocked too); the seed
+      # content itself is covered by the seed tests and the sandbox dry run. Backslashes
+      # are doubled: a dict fixture becomes a SQL string literal, where \b is a backspace.
+      - input: ref('diet_category_map')
+        rows:
+          - {PRIORITY: 100, FOOD_GROUP: other, TFP_CATEGORY: misc_other, PATTERN: 'candy|chocolate (candy|bar)', IS_WHOLE_FOOD: false}
+          - {PRIORITY: 201, FOOD_GROUP: dairy, TFP_CATEGORY: dairy_lowfat, PATTERN: 'yogurt|skim', IS_WHOLE_FOOD: false}
+          - {PRIORITY: 202, FOOD_GROUP: dairy, TFP_CATEGORY: dairy_higherfat, PATTERN: 'whole milk|chocolate milk|\\bmilk\\b', IS_WHOLE_FOOD: false}
+          - {PRIORITY: 301, FOOD_GROUP: protein, TFP_CATEGORY: protein_nuts_seeds_soy, PATTERN: 'peanut butter', IS_WHOLE_FOOD: false}
+          - {PRIORITY: 303, FOOD_GROUP: protein, TFP_CATEGORY: protein_poultry, PATTERN: 'chicken', IS_WHOLE_FOOD: false}
+          - {PRIORITY: 304, FOOD_GROUP: protein, TFP_CATEGORY: protein_meat, PATTERN: '\\bpork\\b|\\bchops?\\b', IS_WHOLE_FOOD: false}
+          - {PRIORITY: 401, FOOD_GROUP: vegetables, TFP_CATEGORY: veg_dark_green, PATTERN: 'broccoli', IS_WHOLE_FOOD: true}
+          - {PRIORITY: 601, FOOD_GROUP: fruits, TFP_CATEGORY: fruit_whole, PATTERN: 'strawberr|apple', IS_WHOLE_FOOD: true}
+      - input: ref('diet_guideline')
+        rows:
+          - {SOURCE_KEY: fda_healthy_2024, FOOD_GROUP: dairy, METRIC: sodium_max_mg_per_serving, VALUE: 230}
+          - {SOURCE_KEY: fda_healthy_2024, FOOD_GROUP: dairy, METRIC: added_sugar_max_g_per_serving, VALUE: 2.5}
+          - {SOURCE_KEY: fda_healthy_2024, FOOD_GROUP: dairy, METRIC: saturated_fat_max_g_per_serving, VALUE: 2}
+          - {SOURCE_KEY: fda_healthy_2024, FOOD_GROUP: protein, METRIC: sodium_max_mg_per_serving, VALUE: 230}
+          - {SOURCE_KEY: fda_healthy_2024, FOOD_GROUP: protein, METRIC: added_sugar_max_g_per_serving, VALUE: 1}
+          - {SOURCE_KEY: fda_healthy_2024, FOOD_GROUP: protein, TFP_CATEGORY: protein_nuts_seeds_soy, METRIC: saturated_fat_max_g_per_serving, VALUE: 1}
+          - {SOURCE_KEY: fda_healthy_2024, FOOD_GROUP: protein, TFP_CATEGORY: protein_poultry, METRIC: saturated_fat_max_g_per_serving, VALUE: 2}
+          - {SOURCE_KEY: fda_healthy_2024, FOOD_GROUP: protein, TFP_CATEGORY: protein_meat, METRIC: saturated_fat_max_g_per_serving, VALUE: 2}
+          - {SOURCE_KEY: fda_healthy_2024, FOOD_GROUP: fruits, METRIC: sodium_max_mg_per_serving, VALUE: 230}
+          - {SOURCE_KEY: fda_healthy_2024, FOOD_GROUP: fruits, METRIC: added_sugar_max_g_per_serving, VALUE: 1}
+          - {SOURCE_KEY: fda_healthy_2024, FOOD_GROUP: fruits, METRIC: saturated_fat_max_g_per_serving, VALUE: 1}
+          - {SOURCE_KEY: fda_healthy_2024, FOOD_GROUP: vegetables, METRIC: sodium_max_mg_per_serving, VALUE: 230}
+          - {SOURCE_KEY: fda_healthy_2024, FOOD_GROUP: vegetables, METRIC: added_sugar_max_g_per_serving, VALUE: 1}
+          - {SOURCE_KEY: fda_healthy_2024, FOOD_GROUP: vegetables, METRIC: saturated_fat_max_g_per_serving, VALUE: 1}
+      - input: ref('int_kroger_product_diet')
+        rows:
+          - {PRODUCT_ID: '2', DECL_VEGAN: true, DECL_KOSHER: false, HAS_INGREDIENTS: true, ING_MEAT_FISH: true}
+          - {PRODUCT_ID: '3', DECL_KOSHER: true, DECL_VEGAN: false, CONTAINS_MILK: true, HAS_INGREDIENTS: true, ING_DAIRY: true}
+          - {PRODUCT_ID: '4', DECL_KOSHER: true, DECL_VEGAN: false, CONTAINS_MILK: true, HAS_INGREDIENTS: true, ING_DAIRY: true}
+          - {PRODUCT_ID: '5', DECL_KOSHER: false, DECL_VEGAN: false, HAS_INGREDIENTS: true, ING_HONEY: true}
+          - {PRODUCT_ID: '6', DECL_KOSHER: false, DECL_VEGAN: false, HAS_INGREDIENTS: false}
+          - {PRODUCT_ID: '7', DECL_KOSHER: true, DECL_VEGAN: false, CONTAINS_MILK: true, HAS_INGREDIENTS: true, ING_DAIRY: true}
+      - input: ref('int_kroger_product_nutrition')
+        rows:
+          - {PRODUCT_ID: '3', NUTRIENT_COUNT: 15, CALORIES: 100, SODIUM_MG: 55}
+          - {PRODUCT_ID: '4', NUTRIENT_COUNT: 12, CALORIES: 150, SODIUM_MG: 120, SATURATED_FAT_G: 5}
+          - {PRODUCT_ID: '5', NUTRIENT_COUNT: 2, CALORIES: 190}
+          - {PRODUCT_ID: '7', NUTRIENT_COUNT: 14, CALORIES: 150, SODIUM_MG: 180, ADDED_SUGAR_G: 12, SATURATED_FAT_G: 1.5}
+    expect:
+      rows:
+        - {PRODUCT_KEY: 'kroger:1', FOOD_GROUP: fruits, TFP_CATEGORY: fruit_whole, IS_WHOLE_FOOD: true, HEALTHY_STATUS: whole_food, VEGAN_STATUS: whole_food_plant, VEGETARIAN_STATUS: whole_food, KOSHER_HALAL_STATUS: inherently_kosher_whole_food, EST_LBS: 1}
+        - {PRODUCT_KEY: 'kroger:2', FOOD_GROUP: protein, TFP_CATEGORY: protein_poultry, IS_WHOLE_FOOD: true, HEALTHY_STATUS: whole_food, VEGAN_STATUS: excluded, VEGETARIAN_STATUS: excluded, KOSHER_HALAL_STATUS: excluded, EST_LBS: null}
+        - {PRODUCT_KEY: 'kroger:3', FOOD_GROUP: dairy, TFP_CATEGORY: dairy_lowfat, IS_WHOLE_FOOD: false, HEALTHY_STATUS: meets_limits, VEGAN_STATUS: excluded, VEGETARIAN_STATUS: no_meat_ingredients_found, KOSHER_HALAL_STATUS: declared_kosher, EST_LBS: null}
+        - {PRODUCT_KEY: 'kroger:4', FOOD_GROUP: dairy, TFP_CATEGORY: dairy_higherfat, IS_WHOLE_FOOD: false, HEALTHY_STATUS: fails, VEGAN_STATUS: excluded, VEGETARIAN_STATUS: no_meat_ingredients_found, KOSHER_HALAL_STATUS: declared_kosher, EST_LBS: null}
+        - {PRODUCT_KEY: 'kroger:5', FOOD_GROUP: protein, TFP_CATEGORY: protein_nuts_seeds_soy, IS_WHOLE_FOOD: false, HEALTHY_STATUS: no_facts, VEGAN_STATUS: excluded, VEGETARIAN_STATUS: no_meat_ingredients_found, KOSHER_HALAL_STATUS: unknown, EST_LBS: null}
+        - {PRODUCT_KEY: 'kroger:6', FOOD_GROUP: protein, TFP_CATEGORY: protein_meat, IS_WHOLE_FOOD: true, HEALTHY_STATUS: whole_food, VEGAN_STATUS: excluded, VEGETARIAN_STATUS: excluded, KOSHER_HALAL_STATUS: excluded, EST_LBS: null}
+        - {PRODUCT_KEY: 'kroger:7', FOOD_GROUP: dairy, TFP_CATEGORY: dairy_higherfat, IS_WHOLE_FOOD: false, HEALTHY_STATUS: fails, VEGAN_STATUS: excluded, VEGETARIAN_STATUS: no_meat_ingredients_found, KOSHER_HALAL_STATUS: declared_kosher, EST_LBS: null}
+        - {PRODUCT_KEY: 'kroger:8', FOOD_GROUP: vegetables, TFP_CATEGORY: veg_dark_green, IS_WHOLE_FOOD: true, HEALTHY_STATUS: whole_food, VEGAN_STATUS: whole_food_plant, VEGETARIAN_STATUS: whole_food, KOSHER_HALAL_STATUS: inherently_kosher_whole_food, EST_LBS: null}
