@@ -37,6 +37,34 @@ import snowflake.connector
 import streamlit as st
 from cryptography.hazmat.primitives import serialization
 
+
+
+def _allow_linkedin_id_token_without_nonce() -> None:
+    """LinkedIn's OpenID Connect ID tokens omit the `nonce` claim even though st.login sends one,
+    so Authlib rejects every LinkedIn sign-in ("MissingClaimError: nonce"). Skip only that one case:
+    issuer is LinkedIn AND the claim is absent. A nonce that is present is still compared, and the
+    ID token's signature (LinkedIn JWKS), issuer, audience and expiry are still verified; the code is
+    exchanged server-side with the client secret and the OAuth `state` still guards against forgery.
+    Applied when the script runs, i.e. before any sign-in callback (the user loads the app first)."""
+    try:
+        from authlib.oidc.core.claims import IDToken
+    except ImportError:
+        return
+    if getattr(IDToken.validate_nonce, "_linkedin_relaxed", False):
+        return
+    original = IDToken.validate_nonce
+
+    def validate_nonce(self):
+        if self.get("iss") == "https://www.linkedin.com/oauth" and "nonce" not in self:
+            return
+        return original(self)
+
+    validate_nonce._linkedin_relaxed = True
+    IDToken.validate_nonce = validate_nonce
+
+
+_allow_linkedin_id_token_without_nonce()
+
 DB = "GROCERYDBTPROJECT"
 MARTS = f"{DB}.GROCERY_MARTS"
 SEM = f"{DB}.GROCERY_SEMANTIC"
@@ -125,10 +153,22 @@ def lit(s) -> str:
 
 
 def call_proc(name: str, *args) -> dict:
+    """CALL a procedure and return its VARIANT as a dict. Uses fetchone, not pandas: Snowflake returns
+    CALL results in JSON format, and connector 4.x fetch_pandas_all refuses non-Arrow results
+    ("NotSupportedError: Unknown error", found 2026-11-27)."""
     arg_sql = ", ".join("NULL" if a is None else lit(a) if isinstance(a, str) else ("TRUE" if a is True else "FALSE" if a is False else str(a)) for a in args)
-    df = q(f"CALL {name}({arg_sql})")
-    raw = df.iloc[0, 0]
-    return json.loads(raw) if isinstance(raw, str) else raw
+    h = _holder()
+    t0 = time.time()
+    with h["lock"]:
+        cur = h["conn"].cursor()
+        try:
+            cur.execute(f"CALL {name}({arg_sql})")
+            row = cur.fetchone()
+        finally:
+            cur.close()
+    st.session_state["pending_wh_seconds"] = st.session_state.get("pending_wh_seconds", 0.0) + (time.time() - t0)
+    raw = row[0] if row else None
+    return json.loads(raw) if isinstance(raw, str) else (raw or {})
 
 
 # --------------------------------------------------------------------------
@@ -208,6 +248,8 @@ def limit_banner(g: dict) -> None:
     if b2.button("Log out"):
         for k in list(st.session_state.keys()):
             del st.session_state[k]
+        if oidc_logged_in():
+            st.logout()  # removes the 30-day identity cookie and reruns
         st.rerun()
 
 
@@ -299,14 +341,63 @@ def finish_login(email: str, code: str) -> None:
         }
         st.error(msgs.get(reason, "Could not verify that code."))
         return
+    install_guest(v)
+
+
+def install_guest(v: dict) -> None:
+    """Put a verified guest (code or LinkedIn) into the session and start the app."""
     g = {"guest_id": v.get("guest_id"), "guest_username": v.get("guest_username"), "first_name": v.get("first_name"),
-         "session_id": v.get("session_id"), "started_at": v.get("started_at"), "expires_at": v.get("expires_at")}
+         "session_id": v.get("session_id"), "started_at": v.get("started_at"), "expires_at": v.get("expires_at"),
+         "provider": v.get("provider")}
     refresh_status(g, v)
     st.session_state["guest"] = g
     st.session_state["pending_wh_seconds"] = 0.0
-    for k in ("code_stage", "pending_email", "code_purpose", "code_note"):
+    for k in ("code_stage", "pending_email", "code_purpose", "code_note", "oidc_need_consent", "oidc_error"):
         st.session_state.pop(k, None)
     st.rerun()
+
+
+# --------------------------------------------------------------------------
+# Sign in with LinkedIn (OpenID Connect via st.login; Snowflake Scripts/Guest/04_guest_oidc.sql)
+# --------------------------------------------------------------------------
+def linkedin_configured() -> bool:
+    try:
+        a = st.secrets["auth"]
+        li = a["linkedin"]
+        vals = [a.get("redirect_uri"), a.get("cookie_secret"), li.get("client_id"), li.get("client_secret")]
+        return all(v and not str(v).startswith("PASTE_") for v in vals)  # placeholders = not configured yet
+    except Exception:
+        return False
+
+
+def oidc_logged_in() -> bool:
+    try:
+        return bool(st.user.is_logged_in)
+    except Exception:
+        return False
+
+
+def linkedin_finish(consent: bool = False, linkedin_url: str | None = None) -> None:
+    """Hand the ID-token claims (validated by Authlib inside st.login) to Snowflake; install the guest or ask for consent."""
+    u = st.user
+    verified = u.get("email_verified") in (True, "true", "True")
+    try:
+        v = call_proc(f"{APP}.SP_GUEST_OIDC_LOGIN", "linkedin", str(u.get("sub") or ""), str(u.get("email") or ""), verified,
+                      u.get("given_name"), u.get("family_name"), (linkedin_url or "").strip() or None, bool(consent))
+    except Exception as ex:
+        st.session_state["oidc_error"] = f"Could not sign you in: {str(ex)[:200]}"
+        return
+    if v.get("ok"):
+        install_guest(v)
+    reason = v.get("reason")
+    if reason == "need_consent":
+        st.session_state["oidc_need_consent"] = v
+    elif reason == "email_unverified":
+        st.session_state["oidc_error"] = "LinkedIn did not confirm an email address for this account. Please use the email option below instead."
+    elif reason == "blocked":
+        st.session_state["oidc_error"] = "This account cannot be used for guest access."
+    else:
+        st.session_state["oidc_error"] = "Could not sign you in with LinkedIn. Please try again or use your email."
 
 
 def sign_up_gate() -> None:
@@ -333,85 +424,130 @@ def sign_up_gate() -> None:
                     st.session_state.pop(k, None)
                 st.rerun()
             st.caption("Codes come from the owner's Gmail address. If nothing arrives, check spam or try again in a minute.")
+        elif linkedin_configured() and oidc_logged_in() and st.session_state.get("oidc_need_consent"):
+            nc = st.session_state["oidc_need_consent"]
+            st.markdown(f"**Welcome, {nc.get('first_name') or 'there'}.** You're signed in with LinkedIn as **{nc.get('email')}**. One step before your first session:")
+            with st.form("oidc_consent"):
+                li_url = st.text_input("Your LinkedIn profile URL (optional)", placeholder="https://www.linkedin.com/in/your-handle", max_chars=200,
+                                       help="LinkedIn doesn't share your profile link with apps, so add it if you'd like the owner to connect.")
+                agree = st.checkbox("I agree that my name, email (and LinkedIn URL, if given) and my questions and clicks in this app are stored in the owner's "
+                                    "Snowflake account so the owner can see how the app is used and follow up. No data is sold or shared. "
+                                    "LinkedIn also shares your photo; it is not stored.")
+                go = st.form_submit_button("Continue", type="primary")
+            if go:
+                if li_url.strip() and not LINKEDIN_RE.match(li_url.strip()):
+                    st.error("The LinkedIn URL should look like https://www.linkedin.com/in/your-handle, or leave it blank.")
+                elif not agree:
+                    st.error("Please tick the consent box; without it nothing is stored and the session cannot start.")
+                else:
+                    with st.spinner("Starting your session..."):
+                        linkedin_finish(consent=True, linkedin_url=li_url)
+            if st.session_state.get("oidc_error"):
+                st.error(st.session_state.pop("oidc_error"))
+            if st.button("Not you? Sign out of LinkedIn"):
+                st.session_state.clear()
+                st.logout()
         else:
-            st.markdown(
-                "**Try it as a guest.** Sign up once with your name, email and LinkedIn profile; we email you a code to confirm the address. "
-                f"You get one session a week: **{SESSION_MINUTES} minutes or {SESSION_CREDIT_CAP:g} Snowflake credits**, whichever comes first "
-                "(about two agent questions plus unlimited lookups and basket pricing). Everyone together shares a weekly budget of "
-                f"{WEEKLY_CREDIT_CAP:g} credits; when it is spent, the door closes until Monday. Already registered? Use **Log in**.")
-            t_signup, t_login = st.tabs(["Sign up", "Log in"])
-            with t_signup:
-                with st.form("guest_signup"):
-                    a, b = st.columns(2)
-                    first = a.text_input("First name", max_chars=60)
-                    last = b.text_input("Last name", max_chars=60)
-                    email = st.text_input("Email", max_chars=120)
-                    linkedin = st.text_input("LinkedIn profile URL", placeholder="https://www.linkedin.com/in/your-handle", max_chars=200)
-                    consent = st.checkbox("I agree that my name, email, LinkedIn URL and my questions and clicks in this app are stored in the owner's Snowflake account "
-                                          "so the owner can see how the app is used and follow up. No data is sold or shared.")
-                    go = st.form_submit_button("Sign up and email me a code", type="primary")
-                if go:
-                    errs = []
-                    if not first.strip() or not last.strip():
-                        errs.append("First and last name are required.")
-                    if not EMAIL_RE.match(email.strip()):
-                        errs.append("That email address does not look valid.")
-                    if not LINKEDIN_RE.match(linkedin.strip()):
-                        errs.append("The LinkedIn URL should look like https://www.linkedin.com/in/your-handle.")
-                    if not consent:
-                        errs.append("Please tick the consent box; without it nothing is stored and the session cannot start.")
-                    if errs:
-                        for e in errs:
-                            st.error(e)
-                    else:
-                        em = email.strip().lower()
-                        with st.spinner("Sending your code..."):
-                            try:
-                                reg = call_proc(f"{APP}.SP_GUEST_REGISTER", em, first.strip(), last.strip(), linkedin.strip(), True)
-                            except Exception as ex:
-                                st.error(f"Could not sign you up: {str(ex)[:200]}")
-                                st.stop()
-                            if reg.get("error") == "blocked":
-                                st.error("This email cannot be used for guest access.")
-                                st.stop()
-                            purpose = "login" if reg.get("already_registered") else "verify"
-                            sent, err = issue_and_send(em, purpose)
-                        if not sent:
-                            st.error(err)
-                        else:
-                            st.session_state.update({"code_stage": True, "pending_email": em, "code_purpose": purpose,
-                                                     "code_note": "That email is already registered, so we sent a login code instead." if purpose == "login" else None})
-                            st.rerun()
-            with t_login:
-                st.caption("Step 1: ask for a code. Step 2: enter it here (codes from a reminder email work here too).")
-                with st.form("guest_login"):
-                    lemail = st.text_input("Email you registered with", max_chars=120)
-                    lcode = st.text_input("6-digit code (leave blank to request one)", max_chars=6)
-                    b1, b2 = st.columns(2)
-                    lgo = b1.form_submit_button("Email me a login code")
-                    lverify = b2.form_submit_button("Log in with my code", type="primary")
-                em = lemail.strip().lower()
-                if (lgo or lverify) and not EMAIL_RE.match(em):
-                    st.error("That email address does not look valid.")
-                elif lverify:
-                    if not lcode.strip():
-                        st.error("Enter the 6-digit code from your email, or ask for a new one.")
-                    else:
-                        finish_login(em, lcode.strip())
-                elif lgo:
-                    with st.spinner("Sending your code..."):
-                        sent, err = issue_and_send(em, "login")
-                    if not sent:
-                        st.error(err)
-                    else:
-                        st.session_state.update({"code_stage": True, "pending_email": em, "code_purpose": "login", "code_note": None})
-                        st.rerun()
+            if linkedin_configured() and oidc_logged_in() and not st.session_state.get("oidc_tried"):
+                # returning visitor (30-day identity cookie) or just back from LinkedIn: no form needed
+                st.session_state["oidc_tried"] = True
+                with st.spinner("Signing you in..."):
+                    linkedin_finish()
+                if st.session_state.get("oidc_need_consent"):
+                    st.rerun()
+            if st.session_state.get("oidc_error"):
+                st.error(st.session_state.pop("oidc_error"))
+            if linkedin_configured() and not oidc_logged_in():
+                st.markdown("**Try it as a guest.** One click with your LinkedIn account, no password and no code to wait for. "
+                            f"You get one session a week: **{SESSION_MINUTES} minutes or {SESSION_CREDIT_CAP:g} Snowflake credits**, whichever comes first.")
+                if st.button("Sign in with LinkedIn", type="primary"):
+                    st.login("linkedin")
+                st.caption("LinkedIn shares your name, email and photo with this app; the photo is not stored.")
+            email_box = st.expander("Or use your email instead", expanded=False) if linkedin_configured() else st.container()
+            with email_box:
+                _email_gate()
     with c2:
         st.markdown("**What it can answer**")
         for fam, desc in FAMILIES.items():
             st.markdown(f"- **{fam}** — {desc}")
         st.caption(NOT_COVERED)
     st.stop()
+
+
+def _email_gate() -> None:
+    """The emailed-code sign-up / log-in (the fallback when LinkedIn is configured)."""
+    st.markdown(
+        "**Try it as a guest.** Sign up once with your name, email and LinkedIn profile; we email you a code to confirm the address. "
+        f"You get one session a week: **{SESSION_MINUTES} minutes or {SESSION_CREDIT_CAP:g} Snowflake credits**, whichever comes first "
+        "(about two agent questions plus unlimited lookups and basket pricing). Everyone together shares a weekly budget of "
+        f"{WEEKLY_CREDIT_CAP:g} credits; when it is spent, the door closes until Monday. Already registered? Use **Log in**.")
+    t_signup, t_login = st.tabs(["Sign up", "Log in"])
+    with t_signup:
+        with st.form("guest_signup"):
+            a, b = st.columns(2)
+            first = a.text_input("First name", max_chars=60)
+            last = b.text_input("Last name", max_chars=60)
+            email = st.text_input("Email", max_chars=120)
+            linkedin = st.text_input("LinkedIn profile URL", placeholder="https://www.linkedin.com/in/your-handle", max_chars=200)
+            consent = st.checkbox("I agree that my name, email, LinkedIn URL and my questions and clicks in this app are stored in the owner's Snowflake account "
+                                  "so the owner can see how the app is used and follow up. No data is sold or shared.")
+            go = st.form_submit_button("Sign up and email me a code", type="primary")
+        if go:
+            errs = []
+            if not first.strip() or not last.strip():
+                errs.append("First and last name are required.")
+            if not EMAIL_RE.match(email.strip()):
+                errs.append("That email address does not look valid.")
+            if not LINKEDIN_RE.match(linkedin.strip()):
+                errs.append("The LinkedIn URL should look like https://www.linkedin.com/in/your-handle.")
+            if not consent:
+                errs.append("Please tick the consent box; without it nothing is stored and the session cannot start.")
+            if errs:
+                for e in errs:
+                    st.error(e)
+            else:
+                em = email.strip().lower()
+                with st.spinner("Sending your code..."):
+                    try:
+                        reg = call_proc(f"{APP}.SP_GUEST_REGISTER", em, first.strip(), last.strip(), linkedin.strip(), True)
+                    except Exception as ex:
+                        st.error(f"Could not sign you up: {str(ex)[:200]}")
+                        st.stop()
+                    if reg.get("error") == "blocked":
+                        st.error("This email cannot be used for guest access.")
+                        st.stop()
+                    purpose = "login" if reg.get("already_registered") else "verify"
+                    sent, err = issue_and_send(em, purpose)
+                if not sent:
+                    st.error(err)
+                else:
+                    st.session_state.update({"code_stage": True, "pending_email": em, "code_purpose": purpose,
+                                             "code_note": "That email is already registered, so we sent a login code instead." if purpose == "login" else None})
+                    st.rerun()
+    with t_login:
+        st.caption("Step 1: ask for a code. Step 2: enter it here (codes from a reminder email work here too).")
+        with st.form("guest_login"):
+            lemail = st.text_input("Email you registered with", max_chars=120)
+            lcode = st.text_input("6-digit code (leave blank to request one)", max_chars=6)
+            b1, b2 = st.columns(2)
+            lgo = b1.form_submit_button("Email me a login code")
+            lverify = b2.form_submit_button("Log in with my code", type="primary")
+        em = lemail.strip().lower()
+        if (lgo or lverify) and not EMAIL_RE.match(em):
+            st.error("That email address does not look valid.")
+        elif lverify:
+            if not lcode.strip():
+                st.error("Enter the 6-digit code from your email, or ask for a new one.")
+            else:
+                finish_login(em, lcode.strip())
+        elif lgo:
+            with st.spinner("Sending your code..."):
+                sent, err = issue_and_send(em, "login")
+            if not sent:
+                st.error(err)
+            else:
+                st.session_state.update({"code_stage": True, "pending_email": em, "code_purpose": "login", "code_note": None})
+                st.rerun()
 
 
 # --------------------------------------------------------------------------
