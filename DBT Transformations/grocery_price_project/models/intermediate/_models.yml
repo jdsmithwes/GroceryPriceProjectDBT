@@ -284,3 +284,95 @@ models:
           - accepted_values:
               arguments:
                 values: ['high', 'low', 'none']
+
+  - name: int_kroger_product_latest_snapshot
+    config:
+      group: kroger
+    description: >
+      The most recent Kroger product object per PRODUCT_ID (one row each,
+      ~11.7k), keeping only the store-independent arrays the healthy-week
+      basket needs: manufacturer declarations, allergens and nutrition
+      information, plus the organic and Passover claims. Built from the raw
+      snapshot rows of the last 10 days of collection, latest row per product,
+      and only those rows are JSON-parsed (~10 s on XS). Dynamic table with
+      target_lag downstream: it refreshes when dim_product_diet does.
+    columns:
+      - name: PRODUCT_ID
+        description: "Kroger product id (text; leading zeros matter)."
+        data_tests:
+          - not_null
+          - unique
+      - name: COLLECTED_AT
+        description: "When this product's latest snapshot was collected."
+      - name: MANUFACTURER_DECLARATIONS
+        description: "Array of declaration strings as Kroger publishes them (Kosher, Vegan, Vegetarian, Halal, Gluten Free, Organic, Dairy Free, ...)."
+      - name: ALLERGENS
+        description: "Array of {name, levelOfContainmentName} objects: Contains, May contain, Free from, Not intentionally nor inherently included, Undeclared."
+      - name: NUTRITION_INFORMATION
+        description: "Array of nutrition entries (one per preparation state), each with servingSize, servingsPerPackage, nutritionalRating, ingredientStatement and a nutrients array."
+
+  - name: int_kroger_product_nutrition
+    config:
+      group: kroger
+    description: >
+      One nutrition-facts row per Kroger product from the latest snapshot:
+      the entry closest to "as sold" (Unprepared, Unspecified, Ready to Eat,
+      Ready to Drink, Prepared; then the most nutrients) pivoted into
+      per-serving columns, plus the ingredient statement, serving size and
+      Kroger's 1-100 nutritional rating. Nutrient codes verified against the
+      live data 2026-11-27. About 72% of products have facts; added sugar is
+      present on ~87% of those.
+    columns:
+      - name: PRODUCT_ID
+        data_tests:
+          - not_null
+          - unique
+      - name: INGREDIENT_STATEMENT
+        description: "Ingredient list as printed; the diet regexes in int_kroger_product_diet read it."
+      - name: NUTRITIONAL_RATING
+        description: "Kroger's nutritional rating, 1-100 (higher is better), as a number."
+      - name: SODIUM_MG
+        description: "Sodium per labelled serving, mg (a GRM unit is converted)."
+      - name: ADDED_SUGAR_G
+        description: "Added sugars per labelled serving, g. NULL when the label predates the added-sugar line."
+      - name: SATURATED_FAT_G
+        description: "Saturated fat per labelled serving, g."
+      - name: PROTEIN_G
+        description: "Protein per labelled serving, g."
+      - name: FIBER_G
+        description: "Dietary fiber per labelled serving, g."
+
+  - name: int_kroger_product_diet
+    config:
+      group: kroger
+    description: >
+      Diet evidence per Kroger product (one row each): manufacturer
+      declaration flags, allergen "Contains" flags, and ingredient-text flags
+      found by word-boundary regex after the usual false friends are removed
+      (coconut milk, peanut butter, cocoa butter, wine vinegar, vanilla
+      extract, oyster mushrooms...). Flags are evidence only; dim_product_diet
+      turns them into statuses with provenance. Halal is declared on 61
+      products in the whole catalog, so no halal status is derived from data.
+    columns:
+      - name: PRODUCT_ID
+        data_tests:
+          - not_null
+          - unique
+      - name: DECL_KOSHER
+        description: "Manufacturer declared Kosher (a certification symbol on the pack)."
+      - name: DECL_VEGAN
+        description: "Manufacturer declared Vegan."
+      - name: DECL_HALAL
+        description: "Manufacturer declared Halal (rare; shown, never inferred)."
+      - name: CONTAINS_MILK
+        description: "Allergen statement says Contains milk and its derivatives."
+      - name: CONTAINS_SHELLFISH
+        description: "Allergen statement says Contains crustaceans, molluscs or shellfish."
+      - name: ING_MEAT_FISH
+        description: "Any meat, poultry, fish, gelatin, rennet, carmine or animal-broth word in the ingredients."
+      - name: ING_DAIRY
+        description: "Any milk, cheese, whey, casein, butter, cream or lactose word in the ingredients (plant milks and nut butters removed first)."
+      - name: ING_PORK
+        description: "Pork, lard, bacon, ham or pork-based cured meat in the ingredients."
+      - name: ING_ALCOHOL
+        description: "Alcohol or an alcoholic drink in the ingredients (vinegars and extracts removed first)."

@@ -297,6 +297,46 @@ with st.sidebar:
     st.divider()
     st.caption("History has no data for Oct 12 – Nov 8, 2026. Walmart is a ~1,400-item catalog slice. Availability is as of the last collection, not live.")
 
+# ---------------------------------------------------------------- healthy week (Snowflake Scripts/Agent/08_healthy_week.sql)
+HW_DIETS = {"none": "No restriction", "vegetarian": "Vegetarian", "vegan": "Vegan", "kosher_halal": "Kosher / halal-friendly"}
+HW_PROFILES = {"adult": "an adult (average of the USDA tables)", "adult_male": "an adult male 20-50", "adult_female": "an adult female 20-50"}
+
+
+def hw_track_items(hw: dict) -> list[dict]:
+    """The picks as SP_TRACK_BASKET items: text keeps the quantity, the key is the priced product."""
+    return [{"item": it["item"] + (f" x{int(it['qty'])}" if (it.get("qty") or 1) > 1 else ""), "product_key": it["product_key"]}
+            for it in hw.get("items") or []]
+
+
+def render_healthy_week(hw: dict) -> None:
+    st_ = hw.get("store") or {}
+    st.caption(f"{st_.get('store')} ({st_.get('city')}, {st_.get('miles')} mi), prices as of {str(st_.get('as_of'))[:10]}. "
+               f"Planned for {HW_PROFILES[hw.get('profile', 'adult')]}.")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("This week", f"${hw['total']:.2f}", f"of ${hw['budget']:.0f}")
+    m2.metric("Items", f"{hw['items_n']}", f"{sum(int(i.get('qty') or 1) for i in hw.get('items') or [])} packs")
+    m3.metric("Left to spend", f"${hw['remaining']:.2f}")
+    m4.metric("Kept for oils, spices, coffee", f"${hw['unallocated']:.2f}", "USDA 'miscellaneous' share")
+    grows = [{"food group": g["food_group"], "USDA target": f"${g['target_dollars']:.2f}", "spent": f"${g['spent']:.2f}", "items": g["items"],
+              "lbs (known sizes)": f"{g['est_lbs'] or 0:.1f} of {g['target_lbs']:.1f}"} for g in hw.get("groups") or []]
+    st.markdown("**Food groups** (budget split by the USDA Thrifty Food Plan; pounds per week from the same tables)")
+    show_df(pd.DataFrame(grows))
+    irows = [{"#": it["n"], "item": it["item"], "size": it.get("size"), "qty": int(it.get("qty") or 1), "price": it["price"], "total": it["line_total"],
+              "category": it["category_label"], "why this one": it["value"], "healthy": it["healthy"], **({"diet": it["diet"]} if it.get("diet") else {})}
+             for it in hw.get("items") or []]
+    st.markdown("**Your basket**")
+    show_df(pd.DataFrame(irows))
+    if hw.get("narrative"):
+        st.markdown("**Meal-prep notes** (written by Claude from the items above, nothing else; numbers are the # column)")
+        st.markdown("\n".join(f"- {l.lstrip('- ').strip()}" for l in hw["narrative"].split("\n") if l.strip()))
+    for n in hw.get("notes") or []:
+        st.caption(n)
+    st.markdown("**Sources**")
+    for s_ in hw.get("sources") or []:
+        st.markdown(f"- [{s_['source']}]({s_['url']}): {s_['used_for']}")
+    st.caption(hw.get("disclaimer") or "")
+
+
 tab_ask, tab_lookup, tab_basket, tab_deals = st.tabs(["Ask", "Look up an item", "My basket", "Deals & trends"])
 # Operations moved out of the app on 2026-11-15: the control plane is native Snowflake
 # (Snowsight dashboard tiles in Agent/ops/dashboard_tiles.sql, GROCERY_OPS.GROCERY_OPS_AGENT in Snowflake Intelligence,
@@ -406,6 +446,32 @@ with tab_basket:
         profile = {}
     prefs = profile.get("preferences") or {}
     saved_lists = [l["list_name"] for l in (profile.get("lists") or [])]
+
+    # ---- plan my week (Snowflake Scripts/Agent/08_healthy_week.sql)
+    with st.expander("Plan my week: a healthy basket for your budget and diet", expanded=not st.session_state.get("basket_result")):
+        st.caption("Give a weekly budget, a diet and a ZIP. Rules pick items at the nearest Kroger: the budget is split the way the USDA Thrifty Food Plan "
+                   "does, every item meets the FDA \"healthy\" per-serving limits or is a plain whole food, and the best value this week wins each category "
+                   "(the same \"cheaper than X% of weeks\" rank as the basket watch). Claude only writes the meal-prep notes. Kroger only: Walmart has no diet or nutrition data.")
+        p1, p2, p3, p4 = st.columns([1, 1.4, 1, 1.4])
+        hw_budget = p1.number_input("Weekly budget ($)", 20, 500, 75, step=5, key="hw_budget")
+        hw_diet = p2.selectbox("Diet", list(HW_DIETS), format_func=HW_DIETS.get, key="hw_diet")
+        hw_zip = p3.text_input("ZIP code (Georgia)", value=prefs.get("home_zip") or "", max_chars=5, key="hw_zip")
+        hw_profile = p4.selectbox("Plan for", list(HW_PROFILES), format_func=HW_PROFILES.get, key="hw_profile")
+        if st.button("Suggest my week", type="primary", key="hw_go"):
+            with st.spinner("Splitting the budget, screening items and writing the notes (about half a minute)..."):
+                st.session_state["hw_result"] = call_proc(f"{APP}.SP_SUGGEST_WEEKLY_BASKET", int(hw_budget), hw_diet, hw_zip or None, hw_profile, 15, True)
+        hw = st.session_state.get("hw_result")
+        if hw and hw.get("ok"):
+            render_healthy_week(hw)
+            hw_name = st.text_input("Save as basket", value=f"Healthy week · {HW_DIETS[hw['diet']]} · ${hw['budget']:.0f}", key="hw_name", max_chars=60)
+            if st.button("Track this basket", key="hw_track", disabled=not hw_name):
+                r = call_proc(f"{APP}.SP_TRACK_BASKET", hw_name, json.dumps(hw_track_items(hw)), 75, True)
+                if hw_zip:
+                    call_proc(f"{APP}.SP_SET_PREFERENCE", hw_zip, None, None)
+                st.session_state["watch_pick"] = hw_name
+                st.success(f"Tracking '{hw_name}': {r.get('items_tracked')} of {r.get('items')} items, checked every Sunday (see Tracked baskets below).")
+        elif hw:
+            st.warning("No Kroger store with current prices near that ZIP yet." if hw.get("reason") == "no_store_prices" else "Couldn't plan a week right now.")
 
     c1, c2, c3 = st.columns([2, 1, 1])
     zip_code = c1.text_input("ZIP code (Georgia)", value=prefs.get("home_zip") or "", max_chars=5)

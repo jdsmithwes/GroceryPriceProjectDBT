@@ -110,6 +110,7 @@ tools and used by the Streamlit app for saved lists and preferences:
 | `SHOPPING_LIST` / `SHOPPING_LIST_ITEM` | named lists with resolved `PRODUCT_KEY`s; the basket tool reads a list by name | `SP_SAVE_LIST`, basket tool |
 | `PRICE_WATCH` | products to alert on (target price or "at historic low") | `SP_WATCH_PRODUCT`; the Sunday task evaluates and writes `PRICE_ALERT` |
 | `BASKET_WATCH` / `BASKET_ALERT` | tracked baskets (a list whose items carry the priced `PRODUCT_KEY`s) and their good-time-to-buy alerts for the basket, its items and look-alike swaps (`07_basket_watch.sql`) | `SP_TRACK_BASKET` (owner app); the Sunday task runs `SP_CHECK_BASKET_WATCHES`, which writes alerts and sends one email |
+| (no new table) healthy week | `SP_SUGGEST_WEEKLY_BASKET` (`08_healthy_week.sql`) proposes a week of groceries for a budget and diet from the dbt mart `dim_product_diet` (USDA Thrifty Food Plan budget split, FDA "healthy" per-serving limits, diet statuses with provenance, percentile-rank value) and a Haiku meal-prep narrative; the result is saved as an ordinary tracked basket | both apps via `SP_TRACK_BASKET` / `SP_GUEST_TRACK_BASKET` (guests: `05_guest_healthy_week.sql`, metered as kind `suggestion`) |
 | `AGENT_FEEDBACK` | thumbs up/down with the question, tool calls and answer | agent tool, Streamlit UI |
 | `AGENT_RUN_LOG` | one row per request: question, tools, latency, credits | eval runner, UI |
 

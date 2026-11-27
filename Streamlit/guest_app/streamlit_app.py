@@ -794,6 +794,44 @@ st.caption(f"Kroger (81 Atlanta-area stores, prices differ by store) and Walmart
 if not active:
     limit_banner(g)
 
+# ---------------------------------------------------------------- healthy week (Snowflake Scripts/Guest/05_guest_healthy_week.sql)
+HW_DIETS = {"none": "No restriction", "vegetarian": "Vegetarian", "vegan": "Vegan", "kosher_halal": "Kosher / halal-friendly"}
+
+
+def hw_track_items(hw: dict) -> list[dict]:
+    """The picks as SP_GUEST_TRACK_BASKET items: text keeps the quantity, the key is the priced product."""
+    return [{"item": it["item"] + (f" x{int(it['qty'])}" if (it.get("qty") or 1) > 1 else ""), "product_key": it["product_key"]}
+            for it in hw.get("items") or []]
+
+
+def render_healthy_week(hw: dict) -> None:
+    st_ = hw.get("store") or {}
+    st.caption(f"{st_.get('store')} ({st_.get('city')}, {st_.get('miles')} mi), prices as of {str(st_.get('as_of'))[:10]}. Planned for an adult (average of the USDA tables).")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("This week", f"${hw['total']:.2f}", f"of ${hw['budget']:.0f}")
+    m2.metric("Items", f"{hw['items_n']}", f"{sum(int(i.get('qty') or 1) for i in hw.get('items') or [])} packs")
+    m3.metric("Left to spend", f"${hw['remaining']:.2f}")
+    m4.metric("Kept for oils, spices, coffee", f"${hw['unallocated']:.2f}", "USDA 'miscellaneous' share")
+    grows = [{"food group": g["food_group"], "USDA target": f"${g['target_dollars']:.2f}", "spent": f"${g['spent']:.2f}", "items": g["items"],
+              "lbs (known sizes)": f"{g['est_lbs'] or 0:.1f} of {g['target_lbs']:.1f}"} for g in hw.get("groups") or []]
+    st.markdown("**Food groups** (budget split by the USDA Thrifty Food Plan; pounds per week from the same tables)")
+    show_df(pd.DataFrame(grows))
+    irows = [{"#": it["n"], "item": it["item"], "size": it.get("size"), "qty": int(it.get("qty") or 1), "price": it["price"], "total": it["line_total"],
+              "category": it["category_label"], "why this one": it["value"], "healthy": it["healthy"], **({"diet": it["diet"]} if it.get("diet") else {})}
+             for it in hw.get("items") or []]
+    st.markdown("**Your basket**")
+    show_df(pd.DataFrame(irows))
+    if hw.get("narrative"):
+        st.markdown("**Meal-prep notes** (written by Claude from the items above, nothing else; numbers are the # column)")
+        st.markdown("\n".join(f"- {l.lstrip('- ').strip()}" for l in hw["narrative"].split("\n") if l.strip()))
+    for n in hw.get("notes") or []:
+        st.caption(n)
+    st.markdown("**Sources**")
+    for s_ in hw.get("sources") or []:
+        st.markdown(f"- [{s_['source']}]({s_['url']}): {s_['used_for']}")
+    st.caption(hw.get("disclaimer") or "")
+
+
 tab_ask, tab_lookup, tab_basket, tab_deals = st.tabs(["Ask", "Look up an item", "My basket", "Deals & trends"])
 
 # ---------------------------------------------------------------- Ask
@@ -883,6 +921,49 @@ with tab_lookup:
 with tab_basket:
     st.subheader("My basket")
     st.write("Type items one per line, give a Georgia ZIP code, and price the basket at the nearest Kroger stores and at Walmart. Then track it: every Sunday you'll see whether this is a good week to buy it.")
+
+    # ---- plan my week (Snowflake Scripts/Guest/05_guest_healthy_week.sql); one suggestion = one metered interaction
+    with st.expander("Plan my week: a healthy basket for your budget and diet", expanded=not st.session_state.get("basket_result")):
+        st.caption("Give a weekly budget, a diet and a ZIP. Rules pick items at the nearest Kroger: the budget is split the way the USDA Thrifty Food Plan "
+                   "does, every item meets the FDA \"healthy\" per-serving limits or is a plain whole food, and the best value this week wins each category "
+                   "(the same \"cheaper than X% of weeks\" rank as the basket watch). Claude only writes the meal-prep notes. Kroger only: Walmart has no diet or nutrition data.")
+        p1, p2, p3 = st.columns([1, 1.4, 1])
+        hw_budget = p1.number_input("Weekly budget ($)", 20, 300, 75, step=5, key="hw_budget", disabled=not active)
+        hw_diet = p2.selectbox("Diet", list(HW_DIETS), format_func=HW_DIETS.get, key="hw_diet", disabled=not active)
+        hw_zip = p3.text_input("ZIP code (Georgia)", value="30318", max_chars=5, key="hw_zip", disabled=not active)
+        if st.button("Suggest my week", type="primary", key="hw_go", disabled=not active):
+            with st.spinner("Splitting the budget, screening items and writing the notes (about half a minute)..."):
+                hw = call_proc(f"{APP}.SP_GUEST_SUGGEST_WEEKLY_BASKET", g["session_id"], int(hw_budget), hw_diet, hw_zip or None)
+            st.session_state["hw_result"] = hw
+            ok = record("suggestion", f"budget {hw_budget} diet {hw_diet} zip {hw_zip}",
+                        json.dumps({"ok": hw.get("ok"), "items": hw.get("items_n"), "total": hw.get("total"), "store": (hw.get("store") or {}).get("store")}),
+                        tokens=hw.get("tokens"), model=hw.get("narrative_model"), ok=bool(hw.get("ok")))
+            if ok is False:
+                st.rerun()
+        hw = st.session_state.get("hw_result")
+        if hw and hw.get("ok"):
+            render_healthy_week(hw)
+            hw_name = st.text_input("Save as basket", value=f"Healthy week · {HW_DIETS[hw['diet']]} · ${hw['budget']:.0f}", key="hw_name", max_chars=60, disabled=not active)
+            if st.button("Track this basket", key="hw_track", disabled=not (active and hw_name)):
+                r = call_proc(f"{APP}.SP_GUEST_TRACK_BASKET", g["session_id"], hw_name, json.dumps(hw_track_items(hw)), 75, True)
+                ok = record("basket_watch", f"track {hw_name}", json.dumps(r)[:500])
+                if r.get("ok"):
+                    st.session_state["watch_pick"] = r.get("list_name")
+                    st.session_state.pop("basket_watches", None)
+                    st.session_state.pop("basket_status", None)
+                    st.success(f"Tracking '{r.get('list_name')}': {r.get('items_tracked')} of {r.get('items')} items, checked every Sunday (see Tracked baskets below).")
+                else:
+                    st.warning({"too_many_baskets": f"You can track up to {r.get('max_baskets')} baskets. Stop tracking one below first.",
+                                "too_many_items": f"A tracked basket can have up to {r.get('max_items')} items.",
+                                "guest_capacity": "Basket tracking for guests is full right now.",
+                                "basket_watch_disabled": "Basket tracking is paused for guests right now."}.get(r.get("reason"), "Couldn't track this basket right now."))
+                if ok is False:
+                    st.rerun()
+        elif hw:
+            st.warning({"no_store_prices": "No Kroger store with current prices near that ZIP yet.",
+                        "healthy_week_disabled": "Weekly planning is paused for guests right now.",
+                        "basket_watch_disabled": "Weekly planning is paused for guests right now."}.get(hw.get("reason"), "Couldn't plan a week in this session."))
+
     c1, c2 = st.columns([2, 1])
     zip_code = c1.text_input("ZIP code (Georgia)", value="30318", max_chars=5, disabled=not active)
     max_stores = c2.number_input("Nearest Kroger stores to price", 1, 81, 10, disabled=not active)
