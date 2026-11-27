@@ -36,3 +36,6 @@ Agent/evals/results_*.json
 # Streamlit secrets (guest app keys live in ~/.snowflake and Streamlit Cloud)
 .streamlit/secrets.toml
 **/.streamlit/secrets.toml
+
+# Portfolio / social promotion kit (kept locally, not published)
+Portfolio/
