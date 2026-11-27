@@ -361,13 +361,27 @@ def install_guest(v: dict) -> None:
 # Sign in with LinkedIn (OpenID Connect via st.login; Snowflake Scripts/Guest/04_guest_oidc.sql)
 # --------------------------------------------------------------------------
 def linkedin_configured() -> bool:
+    """True when [auth] and [auth.linkedin] hold real values. When not, the reason (key names only,
+    never values) goes to the server log once per process, so a Cloud deploy shows why."""
+    missing = []
     try:
-        a = st.secrets["auth"]
-        li = a["linkedin"]
-        vals = [a.get("redirect_uri"), a.get("cookie_secret"), li.get("client_id"), li.get("client_secret")]
-        return all(v and not str(v).startswith("PASTE_") for v in vals)  # placeholders = not configured yet
-    except Exception:
-        return False
+        a = st.secrets.get("auth") or {}
+        li = a.get("linkedin") or {}
+        for name, v in (("auth.redirect_uri", a.get("redirect_uri")), ("auth.cookie_secret", a.get("cookie_secret")),
+                        ("auth.linkedin.client_id", li.get("client_id")), ("auth.linkedin.client_secret", li.get("client_secret")),
+                        ("auth.linkedin.server_metadata_url", li.get("server_metadata_url"))):
+            if not v or str(v).startswith("PASTE_"):
+                missing.append(name)
+    except Exception as ex:
+        missing.append(f"secrets unreadable ({type(ex).__name__})")
+    if missing and not _AUTH_DIAG_LOGGED:
+        _AUTH_DIAG_LOGGED.append(True)
+        top = sorted(st.secrets.keys()) if hasattr(st.secrets, "keys") else []
+        print(f"[grocery-guest] LinkedIn sign-in off; missing or placeholder: {', '.join(missing)}; top-level secret sections: {top}", flush=True)
+    return not missing
+
+
+_AUTH_DIAG_LOGGED: list = []
 
 
 def oidc_logged_in() -> bool:
