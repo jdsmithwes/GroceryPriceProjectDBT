@@ -264,7 +264,7 @@ ALTER TASK GROCERYDBTPROJECT.GROCERY_ML.TASK_WEEKLY_PRICE_FORECAST SUSPEND;
 CREATE OR REPLACE TASK GROCERYDBTPROJECT.GROCERY_ML.TASK_WEEKLY_PRICE_FORECAST
     WAREHOUSE = GROCERY_ML_WH
     SCHEDULE = 'USING CRON 0 6 * * SUN America/New_York'
-    COMMENT = 'Weekly: refresh price series (and its upstream chain), retrain + forecast the scoped products, refresh buy recommendations, label new products, refill the product search table, check price watches'
+    COMMENT = 'Weekly: refresh price series (and its upstream chain), retrain + forecast the scoped products, refresh buy recommendations, label new products, refill the product search table, check price and basket watches'
 AS
 EXECUTE IMMEDIATE $$
 BEGIN
@@ -283,6 +283,8 @@ BEGIN
     SELECT * FROM GROCERYDBTPROJECT.GROCERY_SEMANTIC.DBT_SEARCH_PRODUCT_INDEX;
     -- price watches (06_state_layer.sql): raise alerts on the new week's prices
     CALL GROCERYDBTPROJECT.GROCERY_APP.SP_CHECK_PRICE_WATCHES();
+    -- basket watches (07_basket_watch.sql): good-time-to-buy alerts + one email
+    CALL GROCERYDBTPROJECT.GROCERY_APP.SP_CHECK_BASKET_WATCHES();
 END;
 $$;
 ALTER TASK GROCERYDBTPROJECT.GROCERY_ML.TASK_WEEKLY_PRICE_FORECAST RESUME;

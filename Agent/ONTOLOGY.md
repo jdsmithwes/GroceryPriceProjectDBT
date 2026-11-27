@@ -95,6 +95,23 @@ lower than that, the answer says the forecast is tentative.
 Walmart item in a shelf-stable Common Category. Stock-up candidate: shelf-stable and
 currently `GOOD_PRICE` or at its historic low.
 
+**Cheaper-than % (percentile rank)** — the share (0-100) of the other weeks in the trailing
+12-week window whose typical price was higher than this week's: "cheaper than 82% of the
+last 12 weeks". A price that never changes scores 0. Defined from 6 observed weeks
+(`fct_buy_recommendation.CHEAPER_THAN_PCT`). The basket watch uses the same formula on a
+tracked basket's weekly total.
+
+**Basket watch** — a saved basket tracked weekly (`07_basket_watch.sql`). Weekly total =
+the sum of each tracked product's typical price, carrying an item's last price over a week
+it was not collected; only weeks where every item has a price count. Good time to buy =
+cheaper-than % at or above the basket's threshold (default 75) with 6+ weeks of history;
+the same test applies to each item.
+
+**Look-alike (better buy)** — for an item in a tracked basket: another product at the same
+retailer with the same product type and unit basis, its size parsed with high confidence,
+10-70% cheaper per unit (bigger gaps are size-parse errors), currently listed, and itself
+at a good cheaper-than %. Up to 3 per item, cheapest per unit first.
+
 **Category price index** — weekly chained Jevons index per Retailer × Common Category:
 the geometric mean of week-over-week price ratios across products observed in both
 weeks (the method behind CPI elementary aggregates). Base week = 100.

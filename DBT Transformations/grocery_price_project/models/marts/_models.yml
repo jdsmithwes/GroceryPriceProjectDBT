@@ -441,6 +441,19 @@ models:
         description: "TRUE if the product keeps at room temperature."
       - name: IS_STOCK_UP_CANDIDATE
         description: "Shelf-stable AND currently a GOOD_PRICE — worth buying extra now."
+      - name: CHEAPER_THAN_PCT
+        description: "Percentile rank of today's price in the trailing window: share (0-100) of the other observed weeks priced higher than today. 0 for a price that never changes; NULL under buy_min_weeks_for_signal weeks. Drives the basket watch."
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+      - name: PRODUCT_TYPE
+        description: "Cortex product-type label from dim_product (look-alike grouping)."
+      - name: UNIT_BASIS
+        description: "Unit of UNIT_PRICE (oz, fl oz, ct, ...) from the parsed package size."
+      - name: UNIT_PRICE
+        description: "CURRENT_PRICE / PACKAGE_QUANTITY; NULL unless the size parsed with high confidence. Compare only within one UNIT_BASIS."
 
   - name: dim_forecast_scope
     description: >

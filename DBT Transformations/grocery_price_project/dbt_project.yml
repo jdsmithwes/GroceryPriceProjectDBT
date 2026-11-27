@@ -49,6 +49,8 @@ vars:
   buy_good_percentile: 0.25         # at/below the item's own 25th percentile = GOOD_PRICE
   buy_high_percentile: 0.75         # at/above its own 75th percentile = HIGH_PRICE
   forecast_move_pct: 0.05           # forecast low must be 5%+ below today to count as "expected lower"
+  basket_good_pct: 75               # basket watch: cheaper than >= this % of trailing weeks = good time to buy
+  similar_min_unit_saving_pct: 0.10 # look-alike swap must be at least 10% cheaper per unit
 
 seeds:
   # Builds seeds into '<your_schema_name>_raw'

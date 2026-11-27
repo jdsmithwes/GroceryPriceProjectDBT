@@ -39,6 +39,14 @@
 --   WAIT              high price (RETURN_BY_WEEK set if forecast expects lower)
 --   NEUTRAL           typical or stable price
 --   INSUFFICIENT_HISTORY
+--
+-- CHEAPER_THAN_PCT (basket watch, 07_basket_watch.sql): the percentile rank
+-- of today's price within the same trailing window — the share (0-100) of
+-- the other observed weeks whose price was HIGHER than today's. "Cheaper than
+-- 82% of the last 12 weeks." A price that never changes scores 0 (no deal);
+-- NULL under buy_min_weeks_for_signal weeks. UNIT_PRICE = CURRENT_PRICE per
+-- UNIT_BASIS from dim_product's parsed size (NULL unless parsed with high confidence);
+-- look-alike swaps compare it within one PRODUCT_TYPE.
 
 {% set trailing = var('history_trailing_weeks') %}
 {% set move = var('forecast_move_pct') %}
@@ -75,7 +83,8 @@ history as (
         max(s.EFFECTIVE_PRICE) as HISTORY_HIGH_PRICE,
         percentile_cont({{ var('buy_good_percentile') }}) within group (order by s.EFFECTIVE_PRICE) as HISTORY_P25_PRICE,
         median(s.EFFECTIVE_PRICE) as HISTORY_MEDIAN_PRICE,
-        percentile_cont({{ var('buy_high_percentile') }}) within group (order by s.EFFECTIVE_PRICE) as HISTORY_P75_PRICE
+        percentile_cont({{ var('buy_high_percentile') }}) within group (order by s.EFFECTIVE_PRICE) as HISTORY_P75_PRICE,
+        count_if(s.EFFECTIVE_PRICE > c.EFFECTIVE_PRICE) as WEEKS_PRICED_HIGHER
 
     from series s
     join current_obs c
@@ -122,6 +131,8 @@ signals as (
         h.HISTORY_MEDIAN_PRICE::number(10, 2) as HISTORY_MEDIAN_PRICE,
         h.HISTORY_P75_PRICE::number(10, 2) as HISTORY_P75_PRICE,
         h.HISTORY_HIGH_PRICE,
+        iff(h.WEEKS_OBSERVED < {{ var('buy_min_weeks_for_signal') }}, null,
+            round(100 * h.WEEKS_PRICED_HIGHER / nullif(h.WEEKS_OBSERVED - 1, 0)))::number(3, 0) as CHEAPER_THAN_PCT,
 
         case
             when h.WEEKS_OBSERVED < {{ var('buy_min_weeks_for_signal') }} then 'INSUFFICIENT_HISTORY'
@@ -185,7 +196,13 @@ select
     -- Stock-up: worth buying extra of now — the item keeps (shelf-stable)
     -- and today's price is good by the rule.
     coalesce(p.IS_SHELF_STABLE, false) as IS_SHELF_STABLE,
-    coalesce(p.IS_SHELF_STABLE, false) and RULE_SIGNAL = 'GOOD_PRICE' as IS_STOCK_UP_CANDIDATE
+    coalesce(p.IS_SHELF_STABLE, false) and RULE_SIGNAL = 'GOOD_PRICE' as IS_STOCK_UP_CANDIDATE,
+
+    -- per-unit price and type, for look-alike swaps (basket watch)
+    p.PRODUCT_TYPE,
+    p.UNIT_BASIS,
+    iff(p.PARSE_CONFIDENCE <> 'high' or coalesce(p.PACKAGE_QUANTITY, 0) <= 0, null,
+        (CURRENT_PRICE / p.PACKAGE_QUANTITY))::number(12, 4) as UNIT_PRICE
 
 from signals
 left join {{ ref('dim_product') }} p
